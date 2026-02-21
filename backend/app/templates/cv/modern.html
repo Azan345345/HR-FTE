@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>{{ cv.personal_info.name }} - CV</title>
+    <style>
+        @page {
+            margin: 0;
+            size: A4;
+        }
+
+        body {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            line-height: 1.5;
+            color: #333;
+            margin: 0;
+            padding: 40px;
+            background: #fff;
+        }
+
+        h1,
+        h2,
+        h3 {
+            color: #1a202c;
+            margin: 0;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        h2 {
+            font-size: 16px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 5px;
+            margin: 25px 0 15px 0;
+            color: #4a5568;
+        }
+
+        h3 {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .header {
+            margin-bottom: 30px;
+        }
+
+        .contact-info {
+            font-size: 13px;
+            color: #718096;
+            margin-top: 5px;
+        }
+
+        .contact-info span {
+            margin-right: 15px;
+        }
+
+        .summary {
+            font-size: 14px;
+            margin-bottom: 25px;
+            color: #4a5568;
+        }
+
+        .skills-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .skill-tag {
+            font-size: 12px;
+            background: #edf2f7;
+            padding: 3px 8px;
+            border-radius: 4px;
+            color: #2d3748;
+            font-weight: 500;
+        }
+
+        .experience-item {
+            margin-bottom: 20px;
+        }
+
+        .exp-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 5px;
+        }
+
+        .company {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .role {
+            font-style: italic;
+            color: #4a5568;
+            font-size: 14px;
+        }
+
+        .date {
+            font-size: 12px;
+            color: #718096;
+        }
+
+        ul {
+            margin: 5px 0;
+            padding-left: 18px;
+        }
+
+        li {
+            font-size: 13px;
+            margin-bottom: 4px;
+            color: #4a5568;
+        }
+
+        .education-item {
+            margin-bottom: 10px;
+        }
+
+        .degree {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .school {
+            font-size: 13px;
+            color: #4a5568;
+        }
+
+        .footer {
+            position: absolute;
+            bottom: 30px;
+            left: 40px;
+            right: 40px;
+            border-top: 1px solid #e2e8f0;
+            padding-top: 10px;
+            font-size: 10px;
+            color: #a0aec0;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>{{ cv.personal_info.name }}</h1>
+        <div class="contact-info">
+            {% if cv.personal_info.email %}<span>{{ cv.personal_info.email }}</span>{% endif %}
+            {% if cv.personal_info.phone %}<span>{{ cv.personal_info.phone }}</span>{% endif %}
+            {% if cv.personal_info.location %}<span>{{ cv.personal_info.location }}</span>{% endif %}
+            {% if cv.personal_info.linkedin %}<span>{{ cv.personal_info.linkedin }}</span>{% endif %}
+        </div>
+    </div>
+
+    {% if cv.summary %}
+    <div class="summary">
+        {{ cv.summary }}
+    </div>
+    {% endif %}
+
+    {% if cv.skills and (cv.skills.technical or cv.skills.soft or cv.skills.tools) %}
+    <h2>Skills</h2>
+    <div class="skills-grid">
+        {% for skill in cv.skills.technical %}
+        <span class="skill-tag">{{ skill }}</span>
+        {% endfor %}
+        {% for skill in cv.skills.tools %}
+        <span class="skill-tag">{{ skill }}</span>
+        {% endfor %}
+        {% for skill in cv.skills.soft %}
+        <span class="skill-tag">{{ skill }}</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if cv.experience %}
+    <h2>Experience</h2>
+    {% for job in cv.experience %}
+    <div class="experience-item">
+        <div class="exp-header">
+            <div>
+                <span class="company">{{ job.company }}</span>
+                {% if job.location %} <span class="role">| {{ job.location }}</span>{% endif %}
+            </div>
+            <span class="date">{{ job.duration }}</span>
+        </div>
+        <div class="role">{{ job.role }}</div>
+        {% if job.achievements %}
+        <ul>
+            {% for point in job.achievements %}
+            <li>{{ point }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if cv.projects %}
+    <h2>Projects</h2>
+    {% for proj in cv.projects %}
+    <div class="experience-item">
+        <div class="exp-header">
+            <span class="company">{{ proj.name }}</span>
+        </div>
+        {% if proj.description %}<div class="role">{{ proj.description }}</div>{% endif %}
+        {% if proj.technologies %}
+        <div class="skills-grid" style="margin-top: 5px;">
+            {% for tech in proj.technologies %}
+            <span class="skill-tag" style="background: #f7fafc; border: 1px solid #e2e8f0;">{{ tech }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if cv.education %}
+    <h2>Education</h2>
+    {% for edu in cv.education %}
+    <div class="education-item">
+        <div class="degree">{{ edu.degree }}{% if edu.field %} in {{ edu.field }}{% endif %}</div>
+        <div class="school">{{ edu.institution }}{% if edu.year %} • {{ edu.year }}{% endif %}</div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    <div class="footer">
+        Generated by Digital FTE AI • tailored for specific role alignment
+    </div>
+</body>
+
+</html>

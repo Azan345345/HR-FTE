@@ -1,0 +1,96 @@
+/* Digital FTE - CV Stylesheet */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #1a1a2e;
+}
+
+.cv-container {
+    max-width: 210mm;
+    margin: 0 auto;
+    padding: 20mm 18mm;
+}
+
+/* ── Header ────────────────────────────── */
+.cv-header {
+    text-align: center;
+    margin-bottom: 18px;
+    border-bottom: 2px solid #6366f1;
+    padding-bottom: 12px;
+}
+.cv-header h1 {
+    font-size: 22pt;
+    color: #1a1a2e;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+.contact-line {
+    font-size: 9pt;
+    color: #555;
+    margin-top: 4px;
+}
+.cv-header a {
+    color: #6366f1;
+    text-decoration: none;
+}
+
+/* ── Sections ──────────────────────────── */
+section { margin-bottom: 16px; }
+section h2 {
+    font-size: 12pt;
+    font-weight: 700;
+    color: #6366f1;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 4px;
+    margin-bottom: 8px;
+}
+
+/* ── Experience ────────────────────────── */
+.experience-item {
+    margin-bottom: 10px;
+}
+.experience-item h3 {
+    font-size: 11pt;
+    font-weight: 600;
+}
+.dates {
+    font-size: 9pt;
+    color: #888;
+}
+.experience-item ul {
+    margin-left: 18px;
+    margin-top: 4px;
+}
+.experience-item li {
+    font-size: 10pt;
+    margin-bottom: 2px;
+}
+
+/* ── Skills ────────────────────────────── */
+.skills p {
+    font-size: 10pt;
+}
+
+/* ── Education ─────────────────────────── */
+.education-item h3 {
+    font-size: 11pt;
+    font-weight: 600;
+}
+
+/* ── Projects ──────────────────────────── */
+.project-item {
+    margin-bottom: 8px;
+}
+.project-item h3 {
+    font-size: 10.5pt;
+    font-weight: 600;
+}
+.project-item p {
+    font-size: 10pt;
+}
