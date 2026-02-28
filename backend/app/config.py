@@ -43,8 +43,6 @@ class Settings(BaseSettings):
     HUNTER_API_KEY: str = ""       # hunter.io — 25 free domain searches/month
     SNOV_CLIENT_ID: str = ""       # snov.io — 50 free searches/month
     SNOV_CLIENT_SECRET: str = ""   # snov.io
-    TOMBA_KEY: str = ""            # tomba.io — 25 free domain searches/month (ta_xxx)
-    TOMBA_SECRET: str = ""         # tomba.io secret (ts_xxx)
 
     # --- Google Cloud ---
     GOOGLE_CLOUD_PROJECT_ID: str = ""
