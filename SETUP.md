@@ -64,6 +64,28 @@ docker compose up --build
 | Backend  | http://localhost:8080          |
 | API Docs | http://localhost:8080/docs     |
 
+### Test Credentials (Skip Registration)
+
+A ready-made test account lets you log in immediately without signing up:
+
+| Field    | Value              |
+|----------|--------------------|
+| Email    | `test@gmail.com`   |
+| Password | `Test@12345`       |
+
+**To create the test user, run once after the backend is up:**
+
+```bash
+# Docker (exec into the running container)
+docker compose exec backend python scripts/create_test_user.py
+
+# Manual / local dev (from the backend/ folder)
+cd backend
+python scripts/create_test_user.py
+```
+
+The script is idempotent — safe to run multiple times. After that, open http://localhost:5173 and sign in with the credentials above.
+
 ---
 
 ## 2. Getting Your API Keys

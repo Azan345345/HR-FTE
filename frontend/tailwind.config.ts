@@ -15,7 +15,7 @@ export default {
     extend: {
       fontFamily: {
         sans: ['"Inter"', 'system-ui', 'sans-serif'],
-        serif: ['"Instrument Serif"', 'Georgia', 'serif'],
+        serif: ['"Montserrat"', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'monospace'],
       },
       boxShadow: {

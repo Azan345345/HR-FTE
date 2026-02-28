@@ -131,7 +131,7 @@
 
   /* ── Typography utilities ── */
   .font-serif {
-    font-family: 'Instrument Serif', Georgia, serif;
+    font-family: 'Montserrat', system-ui, sans-serif;
   }
 
   .font-sans {

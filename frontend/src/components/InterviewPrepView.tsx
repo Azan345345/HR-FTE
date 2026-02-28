@@ -82,7 +82,7 @@ function QuestionCard({ q, index, color }: { q: any; index: number; color: strin
                         </span>
                     )}
                     {q.framework && (
-                        <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-100">
+                        <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
                             STAR
                         </span>
                     )}
@@ -122,7 +122,7 @@ function QuestionCard({ q, index, color }: { q: any; index: number; color: strin
                             )}
                             {q.key_principle && (
                                 <div className="flex items-start gap-1.5">
-                                    <Star size={11} className="text-rose-400 flex-shrink-0 mt-0.5" />
+                                    <Star size={11} className="text-primary flex-shrink-0 mt-0.5" />
                                     <p className="text-[11px] text-slate-500">{q.key_principle}</p>
                                 </div>
                             )}
@@ -265,10 +265,10 @@ function GeneratingState({ jobTitle, company }: { jobTitle: string; company: str
                 <motion.div
                     animate={{ rotate: 360 }}
                     transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-                    className="w-20 h-20 border-4 border-dashed border-rose-200 rounded-full"
+                    className="w-20 h-20 border-4 border-dashed border-primary/25 rounded-full"
                 />
                 <div className="absolute inset-0 flex items-center justify-center">
-                    <BrainCircuit size={28} className="text-rose-600" />
+                    <BrainCircuit size={28} className="text-primary" />
                 </div>
             </div>
             <h2 className="text-xl font-bold text-slate-900 mb-1">Building Elite Prep Strategy</h2>
@@ -281,7 +281,7 @@ function GeneratingState({ jobTitle, company }: { jobTitle: string; company: str
                     exit={{ opacity: 0, y: -6 }}
                     className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 px-4 py-2 rounded-full"
                 >
-                    <div className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                     {steps[step]}
                 </motion.div>
             </AnimatePresence>
@@ -341,7 +341,7 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
         <div className="flex flex-col h-full bg-white border-l border-slate-100">
             {/* Header */}
             <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 bg-slate-50 flex-shrink-0">
-                <div className="w-7 h-7 rounded-xl bg-rose-600 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-xl bg-primary flex items-center justify-center">
                     <Bot size={14} className="text-white" />
                 </div>
                 <div>
@@ -366,16 +366,16 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
                             className={`flex gap-2 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
                         >
                             <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
-                                msg.role === "assistant" ? "bg-rose-100" : "bg-slate-200"
+                                msg.role === "assistant" ? "bg-primary/15" : "bg-slate-200"
                             }`}>
                                 {msg.role === "assistant"
-                                    ? <Bot size={12} className="text-rose-600" />
+                                    ? <Bot size={12} className="text-primary" />
                                     : <User2 size={12} className="text-slate-600" />}
                             </div>
                             <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap ${
                                 msg.role === "assistant"
                                     ? "bg-slate-50 border border-slate-100 text-slate-700 rounded-tl-sm"
-                                    : "bg-rose-600 text-white rounded-tr-sm"
+                                    : "bg-primary text-white rounded-tr-sm"
                             }`}>
                                 {msg.content}
                             </div>
@@ -383,13 +383,13 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
                     ))}
                     {loading && (
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-2">
-                            <div className="w-6 h-6 rounded-full bg-rose-100 flex items-center justify-center flex-shrink-0">
-                                <Bot size={12} className="text-rose-600" />
+                            <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0">
+                                <Bot size={12} className="text-primary" />
                             </div>
                             <div className="px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-2xl rounded-tl-sm">
                                 <div className="flex gap-1 items-center">
                                     {[0, 1, 2].map(i => (
-                                        <motion.div key={i} className="w-1.5 h-1.5 bg-rose-400 rounded-full"
+                                        <motion.div key={i} className="w-1.5 h-1.5 bg-primary rounded-full"
                                             animate={{ scale: [1, 1.4, 1] }}
                                             transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }} />
                                     ))}
@@ -405,7 +405,7 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
             {messages.length === 1 && (
                 <div className="px-3 pb-2 flex flex-wrap gap-1">
                     {quickPrompts.map((p, i) => (
-                        <button key={i} onClick={() => setInput(p)} className="text-[10px] px-2 py-1 bg-slate-100 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 border border-slate-200 rounded-lg text-slate-600 transition-all">
+                        <button key={i} onClick={() => setInput(p)} className="text-[10px] px-2 py-1 bg-slate-100 hover:bg-primary/10 hover:text-primary hover:border-primary/30 border border-slate-200 rounded-lg text-slate-600 transition-all">
                             {p}
                         </button>
                     ))}
@@ -414,7 +414,7 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
 
             {/* Input */}
             <div className="px-3 pb-3 flex-shrink-0">
-                <div className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2 focus-within:border-rose-300 focus-within:ring-2 focus-within:ring-rose-50 transition-all">
+                <div className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
                     <textarea
                         ref={inputRef}
                         rows={1}
@@ -428,7 +428,7 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
                     <button
                         onClick={sendMessage}
                         disabled={!input.trim() || loading}
-                        className="w-7 h-7 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 flex items-center justify-center flex-shrink-0 transition-all"
+                        className="w-7 h-7 rounded-xl bg-primary hover:brightness-110 disabled:opacity-40 flex items-center justify-center flex-shrink-0 transition-all"
                     >
                         <Send size={12} className="text-white" />
                     </button>
@@ -668,12 +668,12 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                     onClick={() => handleSelectJob(job.id)}
                                     className={`w-full text-left p-3 rounded-xl border transition-all ${
                                         isSelected
-                                            ? "bg-white border-rose-200 shadow-md shadow-rose-100/20 ring-1 ring-rose-50"
+                                            ? "bg-white border-primary/30 shadow-md shadow-primary/10 ring-1 ring-primary/10"
                                             : "border-transparent hover:bg-white hover:border-slate-200"
                                     }`}
                                 >
                                     <div className="flex items-center gap-2 mb-1">
-                                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 ${isSelected ? "bg-rose-600 text-white" : "bg-slate-200 text-slate-500"}`}>
+                                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 ${isSelected ? "bg-primary text-white" : "bg-slate-200 text-slate-500"}`}>
                                             {(job.company || "?")[0].toUpperCase()}
                                         </div>
                                         <div className="flex-1 min-w-0">
@@ -710,7 +710,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                         <div className="lg:col-span-2 space-y-4">
                             <div className="bg-slate-900 text-white rounded-2xl p-6">
                                 <div className="flex items-center gap-2 mb-3">
-                                    <Globe size={14} className="text-rose-400" />
+                                    <Globe size={14} className="text-primary" />
                                     <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Company Intelligence</span>
                                 </div>
                                 <h3 className="text-xl font-bold mb-3">{selectedJob?.company}</h3>
@@ -718,7 +718,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     {research.culture && (
                                         <div className="p-3 bg-white/5 rounded-xl border border-white/10">
-                                            <p className="text-[9px] font-bold text-rose-400 uppercase tracking-wider mb-1">Culture</p>
+                                            <p className="text-[9px] font-bold text-primary uppercase tracking-wider mb-1">Culture</p>
                                             <p className="text-xs text-slate-300 leading-relaxed">{research.culture}</p>
                                         </div>
                                     )}
@@ -746,7 +746,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                             <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
                                 {[
                                     { label: "Technical",   val: techQs.length,  color: "text-violet-600", bg: "bg-violet-50", border: "border-violet-100" },
-                                    { label: "Behavioral",  val: behavQs.length, color: "text-rose-600",   bg: "bg-rose-50",   border: "border-rose-100"   },
+                                    { label: "Behavioral",  val: behavQs.length, color: "text-primary",   bg: "bg-primary/10",   border: "border-primary/20"   },
                                     { label: "Situational", val: situQs.length,  color: "text-amber-600",  bg: "bg-amber-50",  border: "border-amber-100"  },
                                     { label: "Sys Design",  val: sysQs.length,   color: "text-indigo-600", bg: "bg-indigo-50", border: "border-indigo-100" },
                                     { label: "Coding",      val: codeQs.length,  color: "text-cyan-600",   bg: "bg-cyan-50",   border: "border-cyan-100"   },
@@ -781,9 +781,9 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                     </ul>
                                 </div>
                             )}
-                            <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4">
+                            <div className="bg-primary/10 border border-primary/20 rounded-2xl p-4">
                                 <div className="flex items-center gap-2 mb-3">
-                                    <Zap size={14} className="text-rose-600" />
+                                    <Zap size={14} className="text-primary" />
                                     <h4 className="text-sm font-bold text-slate-800">Quick Navigation</h4>
                                 </div>
                                 <div className="space-y-1.5">
@@ -792,12 +792,12 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                         return (
                                             <button key={tab.key} onClick={() => setActiveTab(tab.key)}
                                                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white hover:shadow-sm transition-all text-left group">
-                                                <tab.icon size={12} className="text-slate-400 group-hover:text-rose-600 transition-colors" />
+                                                <tab.icon size={12} className="text-slate-400 group-hover:text-primary transition-colors" />
                                                 <span className="text-xs font-medium text-slate-600 flex-1">{tab.label}</span>
                                                 {count != null && (
                                                     <span className="text-[9px] font-bold px-1.5 py-0.5 bg-slate-200 text-slate-500 rounded-full">{count}</span>
                                                 )}
-                                                <ChevronRight size={12} className="text-slate-300 group-hover:text-rose-500 transition-colors" />
+                                                <ChevronRight size={12} className="text-slate-300 group-hover:text-primary transition-colors" />
                                             </button>
                                         );
                                     })}
@@ -835,9 +835,9 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                 return (
                     <div className="p-5 lg:p-8">
                         <h3 className="font-bold text-slate-900 text-lg mb-2">Behavioral Questions</h3>
-                        <div className="flex items-center gap-2 mb-5 px-3 py-2 bg-rose-50 border border-rose-100 rounded-xl">
-                            <Star size={13} className="text-rose-500 flex-shrink-0" />
-                            <p className="text-xs text-rose-700">All answers use the <strong>STAR method</strong>. Personalized to your CV if uploaded.</p>
+                        <div className="flex items-center gap-2 mb-5 px-3 py-2 bg-primary/10 border border-primary/20 rounded-xl">
+                            <Star size={13} className="text-primary flex-shrink-0" />
+                            <p className="text-xs text-primary/80">All answers use the <strong>STAR method</strong>. Personalized to your CV if uploaded.</p>
                         </div>
                         <div className="space-y-3">
                             {behavQs.map((q: any, i: number) => <QuestionCard key={i} q={q} index={i} color="rose" />)}
@@ -992,15 +992,15 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                             initial={{ opacity: 0, x: -10 }}
                                             animate={{ opacity: 1, x: 0 }}
                                             transition={{ delay: i * 0.05 }}
-                                            className="flex gap-4 items-start bg-white border border-slate-100 rounded-2xl p-4 hover:border-rose-100 hover:shadow-sm transition-all"
+                                            className="flex gap-4 items-start bg-white border border-slate-100 rounded-2xl p-4 hover:border-primary/20 hover:shadow-sm transition-all"
                                         >
                                             <div className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center flex-shrink-0 ${
-                                                i === 0 ? "bg-rose-100 border border-rose-200" :
+                                                i === 0 ? "bg-primary/15 border border-primary/30" :
                                                 i === 6 ? "bg-green-100 border border-green-200" :
                                                 "bg-slate-100 border border-slate-200"
                                             }`}>
-                                                <span className={`text-[8px] font-bold uppercase ${i === 0 ? "text-rose-500" : i === 6 ? "text-green-600" : "text-slate-500"}`}>Day</span>
-                                                <span className={`text-sm font-bold ${i === 0 ? "text-rose-600" : i === 6 ? "text-green-700" : "text-slate-700"}`}>{i + 1}</span>
+                                                <span className={`text-[8px] font-bold uppercase ${i === 0 ? "text-primary" : i === 6 ? "text-green-600" : "text-slate-500"}`}>Day</span>
+                                                <span className={`text-sm font-bold ${i === 0 ? "text-primary" : i === 6 ? "text-green-700" : "text-slate-700"}`}>{i + 1}</span>
                                             </div>
                                             <div className="flex-1">
                                                 <p className="text-xs font-bold text-slate-800 mb-0.5 capitalize">{day.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}</p>
@@ -1068,14 +1068,14 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                         <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                             className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-slate-50/30">
                             <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center mb-5 shadow-lg border border-slate-100">
-                                <Brain size={36} className="text-rose-500" />
+                                <Brain size={36} className="text-primary" />
                             </div>
                             <h2 className="text-2xl font-bold text-slate-900 mb-2">Interview Prep</h2>
                             <p className="text-slate-500 text-sm max-w-sm leading-relaxed mb-6">
                                 Select a job to generate an elite interview strategy — deep technical questions, STAR behavioral prep, system design, coding challenges, salary strategy, and a 7-day study plan.
                             </p>
                             <button onClick={() => setSidebarOpen(true)}
-                                className="lg:hidden px-5 h-10 bg-rose-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-rose-700 transition-all mx-auto shadow-lg shadow-rose-200">
+                                className="lg:hidden px-5 h-10 bg-primary text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:brightness-110 transition-all mx-auto shadow-lg shadow-primary/20">
                                 <LayoutList size={15} /> Choose a Job
                             </button>
                             <div className="hidden lg:grid grid-cols-3 gap-3 mt-4 w-full max-w-lg">
@@ -1088,7 +1088,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                     { icon: CalendarDays, label: "7-Day Study Plan",    desc: "Structured prep schedule" },
                                 ].map((f, i) => (
                                     <div key={i} className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center text-center">
-                                        <f.icon className="text-rose-500 mb-2" size={20} />
+                                        <f.icon className="text-primary mb-2" size={20} />
                                         <span className="text-xs font-bold text-slate-800 mb-1">{f.label}</span>
                                         <span className="text-[10px] text-slate-400">{f.desc}</span>
                                     </div>
@@ -1103,12 +1103,12 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
 
                     ) : genError ? (
                         <motion.div key="err" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-                            <div className="w-16 h-16 bg-rose-50 rounded-2xl flex items-center justify-center mb-4">
-                                <AlertCircle size={28} className="text-rose-500" />
+                            <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mb-4">
+                                <AlertCircle size={28} className="text-primary" />
                             </div>
                             <h3 className="font-bold text-slate-900 mb-2">Generation Failed</h3>
                             <p className="text-sm text-slate-500 mb-5 max-w-xs">{genError}</p>
-                            <button onClick={handleGenerate} className="px-5 h-10 bg-rose-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-rose-700 transition-all mx-auto">
+                            <button onClick={handleGenerate} className="px-5 h-10 bg-primary text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:brightness-110 transition-all mx-auto">
                                 <RefreshCw size={15} /> Try Again
                             </button>
                         </motion.div>
@@ -1124,7 +1124,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                 Will generate: 12+ technical Qs, behavioral STAR answers, system design, coding challenges, culture fit, salary strategy, and a 7-day study plan.
                             </p>
                             <button onClick={handleGenerate}
-                                className="px-6 h-11 bg-rose-600 text-white rounded-xl font-bold flex items-center gap-2.5 hover:bg-rose-700 shadow-lg shadow-rose-100 transition-all hover:scale-105 active:scale-95 text-sm mx-auto">
+                                className="px-6 h-11 bg-primary text-white rounded-xl font-bold flex items-center gap-2.5 hover:brightness-110 shadow-lg shadow-primary/20 transition-all hover:scale-105 active:scale-95 text-sm mx-auto">
                                 <Brain size={17} /> Generate Elite Strategy
                             </button>
                             <p className="text-[10px] text-slate-300 mt-4">Usually takes 1–3 minutes</p>
@@ -1141,7 +1141,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                 The previous generation didn't produce any content. This usually happens when the AI model is overloaded.
                                 Click below to try again.
                             </p>
-                            <button onClick={handleGenerate} className="px-6 h-11 bg-rose-600 text-white rounded-xl font-bold flex items-center gap-2.5 hover:bg-rose-700 shadow-lg shadow-rose-100 transition-all text-sm mx-auto">
+                            <button onClick={handleGenerate} className="px-6 h-11 bg-primary text-white rounded-xl font-bold flex items-center gap-2.5 hover:brightness-110 shadow-lg shadow-primary/20 transition-all text-sm mx-auto">
                                 <RefreshCw size={15} /> Regenerate Strategy
                             </button>
                         </motion.div>
@@ -1178,7 +1178,7 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
                                                 whileTap={{ scale: 0.97 }}
                                                 className={`flex items-center gap-1.5 px-3 h-8 rounded-xl text-xs font-semibold transition-all shadow-sm ${
                                                     chatOpen
-                                                        ? "bg-rose-600 text-white border border-rose-600"
+                                                        ? "bg-primary text-white border border-primary"
                                                         : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
                                                 }`}
                                             >
