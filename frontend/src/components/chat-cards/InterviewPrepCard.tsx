@@ -20,7 +20,6 @@ interface InterviewReadyMeta {
 interface Props {
   metadata: InterviewReadyMeta;
   onSendAction: (action: string) => void;
-  onNavigateToInterview?: (jobId: string | null) => void;
 }
 
 const ICON_MAP: Record<string, React.FC<any>> = {
@@ -41,7 +40,7 @@ const CATEGORY_COLORS = [
   "bg-pink-50 border-pink-200 text-pink-700",
 ];
 
-export function InterviewPrepCard({ metadata, onSendAction, onNavigateToInterview }: Props) {
+export function InterviewPrepCard({ metadata, onSendAction }: Props) {
   const { job, categories, prep_id, salary_range, questions_to_ask = [] } = metadata;
 
   return (
@@ -112,13 +111,13 @@ export function InterviewPrepCard({ metadata, onSendAction, onNavigateToIntervie
           size="sm"
           className="w-full h-9 text-[12px] font-semibold bg-slate-800 hover:bg-slate-900 text-white gap-1.5 font-sans"
           onClick={() => {
-            if (onNavigateToInterview) {
-              // Navigate to interview prep view (job.id may be null for old cards — view handles it)
-              onNavigateToInterview(job.id ?? null);
-            } else {
-              // Fallback only when running outside Index context
-              onSendAction(`__PREP_INTERVIEW__:${job.id || prep_id}`);
-            }
+            // Fire a custom browser event — Index.tsx listens and switches view.
+            // This bypasses all prop-drilling and works regardless of component depth.
+            window.dispatchEvent(
+              new CustomEvent("navigate-to-interview", {
+                detail: { jobId: job.id ?? null },
+              })
+            );
           }}
         >
           Start Mock Interview

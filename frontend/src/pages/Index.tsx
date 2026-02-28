@@ -63,6 +63,17 @@ const Index = () => {
     }
   }, [isAuthenticated, appState, activeSessionId, fetchSessions]);
 
+  // Listen for navigate-to-interview events fired by InterviewPrepCard's "Start Mock Interview" button
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { jobId } = (e as CustomEvent).detail;
+      if (jobId) setFocusedJobId(jobId);
+      setActiveView("interview_prep");
+    };
+    window.addEventListener("navigate-to-interview", handler);
+    return () => window.removeEventListener("navigate-to-interview", handler);
+  }, []);
+
   const handleWelcomeSubmit = useCallback(() => {
     setAppState("transitioning");
     setTimeout(() => setAppState("workspace"), 1200);
@@ -99,10 +110,6 @@ const Index = () => {
                   <CenterPanel
                     activeSessionId={activeSessionId}
                     onSessionCreated={setActiveSessionId}
-                    onNavigateToInterview={(jobId) => {
-                      if (jobId) setFocusedJobId(jobId);
-                      setActiveView("interview_prep");
-                    }}
                   />
                 </div>
                 <RightSidebar />

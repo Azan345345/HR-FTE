@@ -243,10 +243,9 @@ const SUGGESTIONS = [
 interface CenterPanelProps {
   activeSessionId: string | null;
   onSessionCreated: (id: string) => void;
-  onNavigateToInterview?: (jobId: string | null) => void;
 }
 
-export function CenterPanel({ activeSessionId, onSessionCreated, onNavigateToInterview }: CenterPanelProps) {
+export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelProps) {
   const [inputValue, setInputValue] = useState("");
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -437,7 +436,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated, onNavigateToInt
       case "cv_review":       return <CVReviewCard metadata={meta as any} onSendAction={sendAction} />;
       case "email_review":    return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} />;
       case "application_sent":return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} />;
-      case "interview_ready": return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} onNavigateToInterview={onNavigateToInterview} />;
+      case "interview_ready": return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
       default: return null;
     }
   }
