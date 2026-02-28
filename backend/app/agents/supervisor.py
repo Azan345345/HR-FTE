@@ -1499,7 +1499,7 @@ async def _handle_prep_interview(
     await _log_execution(db, user_id, "prep", "interview_prep", f"prep:{job.title}@{job.company}",
                          "success", int((time.monotonic() - _t_prep) * 1000))
 
-    # Save prep record
+    # Save prep record — persist ALL generated categories
     prep_record = InterviewPrep(
         user_id=user_id,
         job_id=job_id,
@@ -1510,6 +1510,11 @@ async def _handle_prep_interview(
         situational_questions=prep_data.get("situational_questions", []),
         salary_research=prep_data.get("salary_research", {}),
         tips=prep_data.get("tips", []),
+        questions_to_ask=prep_data.get("questions_to_ask", []),
+        system_design_questions=prep_data.get("system_design_questions", []),
+        coding_challenges=prep_data.get("coding_challenges", []),
+        cultural_questions=prep_data.get("cultural_questions", []),
+        study_plan=prep_data.get("study_plan", {}),
         status="completed",
     )
     db.add(prep_record)
@@ -1519,15 +1524,25 @@ async def _handle_prep_interview(
     tech_count = len(prep_data.get("technical_questions", []))
     behavioral_count = len(prep_data.get("behavioral_questions", []))
     situational_count = len(prep_data.get("situational_questions", []))
+    sys_count = len(prep_data.get("system_design_questions", []))
+    code_count = len(prep_data.get("coding_challenges", []))
+    cult_count = len(prep_data.get("cultural_questions", []))
+
+    # Build category list — only include non-empty categories
+    categories = []
+    if tech_count:      categories.append({"name": "Technical",     "count": tech_count,      "icon": "code"})
+    if behavioral_count: categories.append({"name": "Behavioral",   "count": behavioral_count, "icon": "users"})
+    if situational_count: categories.append({"name": "Situational", "count": situational_count,"icon": "file-code"})
+    if sys_count:       categories.append({"name": "System Design",  "count": sys_count,        "icon": "layers"})
+    if code_count:      categories.append({"name": "Coding",         "count": code_count,       "icon": "code2"})
+    if cult_count:      categories.append({"name": "Cultural",       "count": cult_count,       "icon": "palette"})
+
+    total_q = tech_count + behavioral_count + situational_count + sys_count + code_count + cult_count
 
     metadata = {
         "type": "interview_ready",
-        "job": {"title": job.title, "company": job.company},
-        "categories": [
-            {"name": "Technical Screen", "count": tech_count, "icon": "code"},
-            {"name": "Behavioral Round", "count": behavioral_count, "icon": "users"},
-            {"name": "Situational Questions", "count": situational_count, "icon": "file-code"},
-        ],
+        "job": {"title": job.title, "company": job.company, "id": job_id},
+        "categories": categories,
         "prep_id": prep_record.id,
         "salary_range": prep_data.get("salary_research", {}).get("market_range", ""),
         "questions_to_ask": prep_data.get("questions_to_ask", []),
@@ -1535,8 +1550,9 @@ async def _handle_prep_interview(
 
     text = (
         f"Your interview prep for **{job.title}** at **{job.company}** is ready! "
-        f"I've prepared **{tech_count}** technical, **{behavioral_count}** behavioral, "
-        f"and **{situational_count}** situational questions tailored to this role."
+        f"I've prepared **{total_q}** questions across {len(categories)} categories — "
+        f"technical, behavioral, situational, system design, coding challenges, and cultural fit. "
+        f"Click **Start Mock Interview** to begin."
     )
 
     await event_bus.emit_agent_completed(user_id, "interview_prep", "Prep materials ready")

@@ -99,6 +99,10 @@ const Index = () => {
                   <CenterPanel
                     activeSessionId={activeSessionId}
                     onSessionCreated={setActiveSessionId}
+                    onNavigateToInterview={(jobId) => {
+                      setFocusedJobId(jobId);
+                      setActiveView("interview_prep");
+                    }}
                   />
                 </div>
                 <RightSidebar />

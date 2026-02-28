@@ -599,9 +599,12 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
     const selectedJob = jobs.find(j => j.id === selectedJobId)
         || applications.find(a => a.job_id === selectedJobId)?.job;
     const appliedJobIds = new Set(applications.map((a: any) => a.job_id));
-    const displayJobs = jobs.length > 0
+    const displayJobs = (jobs.length > 0
         ? jobs
-        : applications.map(a => ({ ...a.job, id: a.job_id }));
+        : applications.map(a => ({ ...a.job, id: a.job_id }))
+    ).slice().sort((a: any, b: any) =>
+        new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    );
 
     const techQs    = activePrep?.technical_questions || [];
     const behavQs   = activePrep?.behavioral_questions || [];
