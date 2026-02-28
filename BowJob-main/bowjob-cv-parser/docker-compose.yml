@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  cv-parser-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cv-parser-api-v3
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PORT=8000
+      - ENV=${ENV:-production}
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - cv-parser-network
+
+networks:
+  cv-parser-network:
+    driver: bridge

@@ -1,0 +1,10 @@
+# Deta Space configuration
+v: 0
+micros:
+  - name: cv-parser-api
+    src: .
+    engine: custom
+    primary: true
+    public_routes:
+      - "/*"
+    run: "uvicorn app_v3:app --host 0.0.0.0 --port 8000"

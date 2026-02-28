@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export DOCKER_HOST=unix:///var/run/docker.sock)",
+      "Bash(DOCKER_HOST=unix://$HOME/.docker/run/docker.sock docker ps:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(docker --version:*)",
+      "Bash(docker-compose:*)",
+      "Bash(docker logout:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # CV Parser Service
+  cv-parser:
+    build:
+      context: ./bowjob-cv-parser
+      dockerfile: Dockerfile
+    container_name: bowjob-cv-parser
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PORT=8000
+      - ENV=${ENV:-production}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - bowjob-network
+
+  # CV-JD Matching & Improvement Service
+  cv-jd-matching:
+    build:
+      context: ./cv-jd-matching
+      dockerfile: Dockerfile
+    container_name: bowjob-cv-jd-matching
+    ports:
+      - "8001:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PORT=8001
+      - ENV=${ENV:-production}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - bowjob-network
+    depends_on:
+      cv-parser:
+        condition: service_healthy
+
+networks:
+  bowjob-network:
+    driver: bridge
