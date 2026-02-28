@@ -114,7 +114,7 @@ async def process_chat_message(
             logger.info("supervisor_intent", intent=intent, message=message[:100])
 
             if intent == "continuation":
-                result = await _handle_continuation(user_id, session_id, history, db)
+                result = await _handle_continuation(user_id, session_id, history, db, message=message)
 
             elif intent == "job_search":
                 result = await _handle_job_search_v2(user_id, session_id, message, db)
@@ -450,8 +450,20 @@ Return ONLY valid JSON."""
 
 # ── Continuation Handler ──────────────────────────────────────────────────────
 
+_APPROVAL_WORDS = frozenset({
+    "yes", "approve", "approved", "send", "send it", "proceed", "confirm",
+    "ok", "okay", "go", "go ahead", "do it", "sure", "sounds good",
+    "alright", "yep", "yup", "absolutely", "correct", "right",
+})
+
+def _is_explicit_approval(msg: str) -> bool:
+    """Return True only when the user's message is an explicit approval/confirmation."""
+    tokens = msg.lower().strip().split()
+    return any(word in _APPROVAL_WORDS for word in tokens[:6])
+
+
 async def _handle_continuation(
-    user_id: str, session_id: str, history: list, db: AsyncSession
+    user_id: str, session_id: str, history: list, db: AsyncSession, message: str = ""
 ) -> Tuple[str, Optional[dict]]:
     """Resume the pipeline from the last known state using conversation history metadata."""
     from sqlalchemy import select, desc
@@ -502,25 +514,43 @@ async def _handle_continuation(
             )
             app = pending.scalar_one_or_none()
             if app:
-                return await _handle_approve_cv(user_id, app.id, db)
+                if _is_explicit_approval(message):
+                    return await _handle_approve_cv(user_id, app.id, db)
+                return (
+                    "You have a pending application ready for your review. "
+                    "Click **Approve** on the CV card above, or type **'approve'** to generate the PDF.",
+                    None,
+                )
             return ("All jobs from that search have been processed! "
                     "Check your Applications tab or search for more jobs.", None)
 
         elif mtype == "cv_review":
             app_id = meta.get("application_id")
             if app_id:
-                await event_bus.emit_log_entry(
-                    user_id, "supervisor", "Continuing Pipeline", "Auto-approving CV and generating PDF"
+                if _is_explicit_approval(message):
+                    await event_bus.emit_log_entry(
+                        user_id, "supervisor", "User approved CV", "Generating PDF and preparing email"
+                    )
+                    return await _handle_approve_cv(user_id, app_id, db)
+                return (
+                    "Please review your tailored CV above.\n\n"
+                    "Click **Approve** on the card, or type **'approve'** / **'yes'** to generate the PDF and see the email draft.",
+                    None,
                 )
-                return await _handle_approve_cv(user_id, app_id, db)
 
         elif mtype == "email_review":
             app_id = meta.get("application_id")
             if app_id:
-                await event_bus.emit_log_entry(
-                    user_id, "supervisor", "Continuing Pipeline", "Sending application email"
+                if _is_explicit_approval(message):
+                    await event_bus.emit_log_entry(
+                        user_id, "supervisor", "User approved email", "Sending application"
+                    )
+                    return await _handle_send_email(user_id, app_id, db)
+                return (
+                    "Please review the email draft above.\n\n"
+                    "Click **Send** on the card, or type **'send'** / **'yes'** to send the application to the hiring team.",
+                    None,
                 )
-                return await _handle_send_email(user_id, app_id, db)
 
         elif mtype == "application_sent":
             next_job = meta.get("next_job_suggestion")
@@ -546,7 +576,13 @@ async def _handle_continuation(
     )
     app = pending_app.scalar_one_or_none()
     if app:
-        return await _handle_approve_cv(user_id, app.id, db)
+        if _is_explicit_approval(message):
+            return await _handle_approve_cv(user_id, app.id, db)
+        return (
+            "You have a pending application awaiting your approval. "
+            "Scroll up to the CV review card and click **Approve**, or type **'approve'** to continue.",
+            None,
+        )
 
     # Look for recent unsent jobs
     recent_job = await db.execute(
