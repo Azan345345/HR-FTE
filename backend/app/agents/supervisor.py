@@ -148,7 +148,8 @@ async def process_chat_message(
                 result = (text, None)
 
             elif intent == "automated_apply":
-                result = await _handle_auto_pipeline(user_id, message, db, session_id)
+                # Redirect to plain job search — HITL approval is required per application
+                result = await _handle_job_search_v2(user_id, session_id, message, db)
 
             else:
                 text = await _general_response(llm, message, history)
@@ -211,15 +212,13 @@ async def _classify_intent(llm, message: str, history: list = None) -> str:
     prompt = f"""You classify the intent of the LATEST user message in a job-application assistant.
 
 INTENTS:
-- job_search: Find/search/discover jobs, roles, or positions
+- job_search: Find/search/discover jobs, roles, or positions (ANY message about finding jobs)
 - cv_upload: Upload or manage CV/resume
 - cv_tailor: Tailor CV for a specific job description
-- apply: Apply to a specific job
 - interview_prep: Interview preparation help
-- automated_apply: Search multiple companies AND apply automatically (e.g. "find top X companies and apply", "apply to all", "auto apply")
 - cv_analysis: Analyze or review the existing CV
 - status: Check application status, stats, pipeline
-- continuation: User continues or confirms an ongoing task ("continue", "yes", "ok", "proceed", "next", "go", "do it", "sure", "send", "send it", "apply", "confirm", "approve", "sounds good")
+- continuation: User continues or confirms an ongoing task
 - general: General question or conversation
 
 CONVERSATION HISTORY:
@@ -227,11 +226,13 @@ CONVERSATION HISTORY:
 
 LATEST USER MESSAGE: "{message}"
 
-RULES (apply in order):
-1. If the message is a short word/phrase like "continue", "yes", "ok", "proceed", "next", "go", "do it", "sure", "send", "send it", "confirm", "approve", "sounds good", "alright" — return "continuation" regardless of history.
-2. If the message explicitly mentions finding AND applying to multiple companies/jobs, return "automated_apply".
-3. If the message references jobs/companies from history, use "job_search" or "automated_apply".
+RULES (apply in strict order):
+1. If the message is a short word/phrase ("continue", "yes", "ok", "proceed", "next", "go", "do it", "sure", "send", "send it", "confirm", "approve", "sounds good", "alright", "yep") — return "continuation".
+2. If the message is about finding, searching, or looking for jobs/roles/positions/companies — return "job_search". This includes phrases like "find me jobs", "search for roles", "look for positions", "I want to apply to companies", "find top companies".
+3. If the message is about tailoring or customising a CV for a job — return "cv_tailor".
 4. Otherwise classify from the literal message.
+
+IMPORTANT: Never return an intent not in the list above. Any request to find or search for jobs MUST return "job_search".
 
 Return ONLY the intent label, one word."""
 
@@ -240,8 +241,8 @@ Return ONLY the intent label, one word."""
         content = response.content if hasattr(response, "content") else str(response)
         intent = content.strip().lower().replace('"', "").replace("'", "").split()[0]
         valid = {
-            "job_search", "cv_upload", "cv_tailor", "apply", "interview_prep",
-            "automated_apply", "cv_analysis", "status", "continuation", "general",
+            "job_search", "cv_upload", "cv_tailor", "interview_prep",
+            "cv_analysis", "status", "continuation", "general",
         }
         return intent if intent in valid else "general"
     except Exception:
@@ -487,9 +488,10 @@ async def _handle_continuation(
         mtype = meta.get("type")
 
         if mtype == "job_results":
-            # Jobs were shown — tailor the first unprocessed one
+            # Jobs were shown — the user must click a specific job card to start tailoring.
+            # Do NOT auto-select or auto-tailor — that skips the user's choice.
             jobs_in_meta = meta.get("jobs", [])
-            # Find first job that hasn't been applied to yet
+            unapplied = []
             for job_entry in jobs_in_meta:
                 job_id = job_entry.get("id")
                 if not job_id:
@@ -501,24 +503,16 @@ async def _handle_continuation(
                     ).limit(1)
                 )
                 if not app_check.scalar_one_or_none():
-                    await event_bus.emit_log_entry(
-                        user_id, "supervisor", "Continuing Pipeline",
-                        f"Auto-starting tailor for job {job_entry.get('title', '')}",
-                    )
-                    return await _handle_tailor_apply(user_id, job_id, db)
-            # All jobs have applications — pick the oldest pending_approval
-            pending = await db.execute(
-                select(Application)
-                .where(Application.user_id == user_id, Application.status == "pending_approval")
-                .order_by(Application.created_at.asc()).limit(1)
-            )
-            app = pending.scalar_one_or_none()
-            if app:
-                if _is_explicit_approval(message):
-                    return await _handle_approve_cv(user_id, app.id, db)
+                    unapplied.append(job_entry)
+
+            if unapplied:
+                titles = ", ".join(
+                    f"**{j.get('title','?')}** at {j.get('company','?')}"
+                    for j in unapplied[:3]
+                )
                 return (
-                    "You have a pending application ready for your review. "
-                    "Click **Approve** on the CV card above, or type **'approve'** to generate the PDF.",
+                    f"You have {len(unapplied)} job(s) ready to apply to: {titles}.\n\n"
+                    "Click **'Tailor CV & Apply'** on the job you want to apply to first.",
                     None,
                 )
             return ("All jobs from that search have been processed! "
