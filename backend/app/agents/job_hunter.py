@@ -271,6 +271,7 @@ async def _search_apify_indeed(
         "parseCompanyDetails": False,
         "saveOnlyUniqueItems": True,
         "followApplyRedirects": False,
+        "fromage": 14,  # only jobs posted in the last 14 days
     }
 
     async with httpx.AsyncClient(timeout=150) as client:
@@ -457,6 +458,8 @@ async def _search_serpapi(
         "gl": country_code,
         "hl": "en",
         "google_domain": domains.get(country_code, "google.com"),
+        "chips": "date:r,604800",  # jobs posted in the last 7 days
+        "no_cache": "true",        # always fetch fresh results, bypass SerpAPI cache
     }
 
     search = GoogleSearch(params)
@@ -501,6 +504,7 @@ async def _search_jsearch(
                 "query": f"{query} {location or ''}".strip(),
                 "num_pages": "1",
                 "country": country_code,
+                "date_posted": "week",  # only jobs from the past week
             },
             timeout=30,
         )

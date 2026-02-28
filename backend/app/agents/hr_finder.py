@@ -2,9 +2,11 @@
 
 Strategy order (stops at first real result):
   1. Company website scraper     — FREE, no API key needed
-  2. Apify Contact Info Scraper  — FREE with existing APIFY_API_KEY (vdrmota/contact-info-scraper)
-  3. Prospeo.io domain search    — 150 free/month (PROSPEO_API_KEY)
-  4. Apify LinkedIn + construct  — uses APIFY_API_KEY, finds name then constructs email
+  2. Apify Contact Info Scraper  — FREE with existing APIFY_API_KEY
+  3. Tomba.io domain search      — FREE 25/month (TOMBA_KEY + TOMBA_SECRET)
+                                    Sign up: https://tomba.io → Dashboard → API Keys
+  4. SerpAPI HR people search    — FREE with existing SERPAPI_API_KEY
+                                    Searches Google for HR contacts, constructs + verifies email
   5. Honest fallback             — never fabricates an email
 """
 
@@ -78,61 +80,31 @@ async def find_hr_contact(
             api_errors.append(f"Apify Contact Scraper: {e}")
             logger.warning("apify_contact_scraper_failed", error=str(e))
 
-    # ── 3. Prospeo.io domain search ────────────────────────────────────────────
-    if settings.PROSPEO_API_KEY and domain:
+    # ── 3. Tomba.io domain search (FREE 25/month) ─────────────────────────────
+    if settings.TOMBA_KEY and settings.TOMBA_SECRET and domain:
         try:
-            result = await _search_prospeo(domain, settings.PROSPEO_API_KEY)
-            if result and result.get("hr_email"):
-                result["verified"] = await _verify_email_domain(result["hr_email"])
-                result["api_errors"] = api_errors
-                logger.info("hr_found_prospeo", company=company, email=result["hr_email"])
-                return result
-        except Exception as e:
-            api_errors.append(f"Prospeo.io: {e}")
-            logger.warning("prospeo_search_failed", error=str(e))
-
-    # ── 4. Apify LinkedIn + email construction ────────────────────────────────
-    if settings.APIFY_API_KEY:
-        try:
-            result = await _search_linkedin_hr(company, job_title, settings.APIFY_API_KEY)
-            if result and result.get("hr_name") and domain:
-                verified_email = await _construct_and_verify_email(result["hr_name"], domain)
-                if verified_email:
-                    result["hr_email"] = verified_email
-                    result["verified"] = True
-                    result["confidence_score"] = 0.65
-                    result["api_errors"] = api_errors
-                    logger.info("hr_found_linkedin+constructed", company=company, email=verified_email)
-                    return result
-        except Exception as e:
-            api_errors.append(f"Apify LinkedIn: {e}")
-            logger.warning("linkedin_hr_search_failed", error=str(e))
-
-    # ── 5. Hunter.io domain search ────────────────────────────────────────────
-    if settings.HUNTER_API_KEY and domain:
-        try:
-            result = await _search_hunter_io(domain, settings.HUNTER_API_KEY)
+            result = await _search_tomba(domain, settings.TOMBA_KEY, settings.TOMBA_SECRET)
             if result and result.get("hr_email"):
                 result["api_errors"] = api_errors
-                logger.info("hr_found_hunter_io", company=company, email=result["hr_email"])
+                logger.info("hr_found_tomba", company=company, email=result["hr_email"])
                 return result
         except Exception as e:
-            api_errors.append(f"Hunter.io: {e}")
-            logger.warning("hunter_io_search_failed", error=str(e))
+            api_errors.append(f"Tomba.io: {e}")
+            logger.warning("tomba_search_failed", error=str(e))
 
-    # ── 6. Snov.io domain search ──────────────────────────────────────────────
-    if settings.SNOV_CLIENT_ID and settings.SNOV_CLIENT_SECRET and domain:
+    # ── 4. SerpAPI HR people search + email construction ─────────────────────
+    if settings.SERPAPI_API_KEY and domain:
         try:
-            result = await _search_snov_io(domain, settings.SNOV_CLIENT_ID, settings.SNOV_CLIENT_SECRET)
+            result = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
             if result and result.get("hr_email"):
                 result["api_errors"] = api_errors
-                logger.info("hr_found_snov_io", company=company, email=result["hr_email"])
+                logger.info("hr_found_serpapi", company=company, email=result["hr_email"])
                 return result
         except Exception as e:
-            api_errors.append(f"Snov.io: {e}")
-            logger.warning("snov_io_search_failed", error=str(e))
+            api_errors.append(f"SerpAPI HR: {e}")
+            logger.warning("serpapi_hr_search_failed", error=str(e))
 
-    # ── 7. Honest fallback ────────────────────────────────────────────────────
+    # ── 5. Honest fallback ────────────────────────────────────────────────────
     careers_url = f"https://{domain}/careers" if domain else ""
     logger.warning("hr_email_not_found", company=company, domain=domain, errors=api_errors)
     return {
@@ -337,123 +309,31 @@ async def _apify_contact_scraper(company: str, domain: str, api_key: str) -> Opt
     }
 
 
-# ── Strategy 3: Prospeo.io ────────────────────────────────────────────────────
+# ── Strategy 3: Tomba.io domain search (FREE 25/month) ───────────────────────
 
-async def _search_prospeo(domain: str, api_key: str) -> Optional[dict]:
-    """Search Prospeo.io for company emails. Free: 150 searches/month.
-    Get key: https://prospeo.io → Dashboard → API
-    """
-    import httpx
-
-    api_key = api_key.strip()
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            "https://api.prospeo.io/domain-search",
-            json={"domain": domain, "limit": 10},
-            headers={"X-KEY": api_key, "Content-Type": "application/json"},
-        )
-        if resp.status_code == 401:
-            raise Exception("Invalid Prospeo API key (401) — check PROSPEO_API_KEY has no extra spaces.")
-        if resp.status_code == 403:
-            raise Exception("Prospeo quota exceeded or plan issue (403).")
-        if resp.status_code == 400:
-            raise Exception(f"Prospeo bad request (400): {resp.text[:200]}")
-        resp.raise_for_status()
-        data = resp.json()
-
-    contacts = data.get("response", [])
-    if not isinstance(contacts, list):
-        contacts = []
-    if not contacts:
-        return None
-
-    def hr_score(c: dict) -> int:
-        combined = f"{c.get('department', '')} {c.get('position', '')} {c.get('seniority', '')}".lower()
-        return sum(2 for kw in _HR_KEYWORDS if kw in combined)
-
-    best = sorted(contacts, key=hr_score, reverse=True)
-    for c in best:
-        email = c.get("email") or c.get("value")
-        if not email or "@" not in email:
-            continue
-        first = c.get("first_name", "")
-        last = c.get("last_name", "")
-        return {
-            "hr_name": f"{first} {last}".strip() or "HR Team",
-            "hr_email": email,
-            "hr_title": c.get("position") or c.get("title") or "HR",
-            "hr_linkedin": c.get("linkedin_url") or c.get("linkedin") or "",
-            "confidence_score": min(round(c.get("confidence", 70) / 100, 2), 1.0),
-            "source": "prospeo.io",
-            "verified": False,
-        }
-    return None
-
-
-# ── Strategy 4: Apify LinkedIn People Search ──────────────────────────────────
-
-async def _search_linkedin_hr(company: str, job_title: str, api_key: str) -> Optional[dict]:
-    """Search LinkedIn for an HR profile at the company using Apify.
-    Uses APIFY_API_KEY — finds name only; email is constructed separately.
-    """
-    import httpx
-
-    actor_id = "curious_coder~linkedin-people-search"
-    url = (
-        f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-        f"?token={api_key}&timeout=60&memory=512"
-    )
-
-    for query in [f"recruiter {company}", f"talent acquisition {company}", f"HR manager {company}"]:
-        try:
-            async with httpx.AsyncClient(timeout=90) as client:
-                resp = await client.post(
-                    url,
-                    json={"searchQueries": [query], "maxResults": 5, "proxy": {"useApifyProxy": True}},
-                )
-                resp.raise_for_status()
-                items = resp.json()
-
-            for item in items:
-                name = item.get("name") or item.get("fullName") or ""
-                headline = (item.get("headline") or item.get("title") or "").lower()
-                current_company = (item.get("company") or item.get("currentCompany") or "").lower()
-                company_match = (
-                    _norm_company(company).lower() in current_company
-                    or current_company in _norm_company(company).lower()
-                )
-                if company_match and any(kw in headline for kw in _HR_KEYWORDS) and name:
-                    return {
-                        "hr_name": name,
-                        "hr_email": "",
-                        "hr_title": item.get("headline") or "Recruiter",
-                        "hr_linkedin": item.get("linkedInUrl") or item.get("url") or "",
-                        "confidence_score": 0.55,
-                        "source": "linkedin_apify",
-                        "verified": False,
-                    }
-        except Exception as e:
-            logger.debug("linkedin_query_failed", query=query, error=str(e))
-    return None
-
-
-# ── Strategy 5: Hunter.io domain search ──────────────────────────────────────
-
-async def _search_hunter_io(domain: str, api_key: str) -> Optional[dict]:
-    """Search Hunter.io for company HR contacts. Free: 25 domain searches/month.
-    Get key: https://hunter.io → Dashboard → API
+async def _search_tomba(domain: str, api_key: str, api_secret: str) -> Optional[dict]:
+    """Search Tomba.io for company HR contacts.
+    Free tier: 25 domain searches/month.
+    Sign up at https://tomba.io → Dashboard → API Keys
+    Returns verified emails with name, title, department and verification status.
     """
     import httpx
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            "https://api.hunter.io/v2/domain-search",
-            params={"domain": domain, "limit": 10, "api_key": api_key},
+            f"https://api.tomba.io/v1/domain-search/{domain}",
+            headers={
+                "X-Tio-Key": api_key.strip(),
+                "X-Tio-Secret": api_secret.strip(),
+                "Content-Type": "application/json",
+            },
         )
         if resp.status_code == 401:
-            raise Exception("Invalid Hunter.io API key (401)")
+            raise Exception("Invalid Tomba.io credentials (401) — check TOMBA_KEY and TOMBA_SECRET")
         if resp.status_code == 429:
-            raise Exception("Hunter.io quota exceeded (429)")
+            raise Exception("Tomba.io quota exceeded (429) — 25 free searches/month")
+        if resp.status_code == 404:
+            return None  # domain not in Tomba database
         resp.raise_for_status()
         data = resp.json()
 
@@ -462,115 +342,148 @@ async def _search_hunter_io(domain: str, api_key: str) -> Optional[dict]:
         return None
 
     def hr_score(e: dict) -> int:
-        combined = f"{e.get('department', '')} {e.get('position', '')} {e.get('seniority', '')}".lower()
-        return sum(2 for kw in _HR_KEYWORDS if kw in combined)
+        combined = (
+            f"{e.get('department', '')} {e.get('position', '')} "
+            f"{e.get('type', '')} {e.get('last_name', '')}"
+        ).lower()
+        score = sum(3 for kw in _HR_KEYWORDS if kw in combined)
+        # Boost verified/deliverable emails
+        verification = e.get("verification") or {}
+        if verification.get("status") == "valid" or verification.get("result") == "deliverable":
+            score += 5
+        return score
 
     best = sorted(emails, key=hr_score, reverse=True)
     for e in best:
-        email = e.get("value")
+        email = e.get("value") or e.get("email") or ""
         if not email or "@" not in email:
             continue
-        first = e.get("first_name", "")
-        last = e.get("last_name", "")
-        confidence = e.get("confidence", 70)
-        verified = (e.get("verification") or {}).get("status") == "valid"
+        first = e.get("first_name") or ""
+        last = e.get("last_name") or ""
+        verification = e.get("verification") or {}
+        is_verified = (
+            verification.get("status") == "valid"
+            or verification.get("result") == "deliverable"
+        )
         return {
             "hr_name": f"{first} {last}".strip() or "HR Team",
             "hr_email": email,
-            "hr_title": e.get("position") or "HR",
+            "hr_title": e.get("position") or e.get("type") or "HR / Recruiter",
             "hr_linkedin": e.get("linkedin") or "",
-            "confidence_score": round(confidence / 100, 2),
-            "source": "hunter.io",
-            "verified": verified,
+            "confidence_score": 0.85 if is_verified else 0.70,
+            "source": "tomba.io",
+            "verified": is_verified,
         }
     return None
 
 
-# ── Strategy 6: Snov.io domain search (v2 API) ────────────────────────────────
+# ── Strategy 4: SerpAPI Google HR search + email construction ─────────────────
 
-async def _search_snov_io(domain: str, client_id: str, client_secret: str) -> Optional[dict]:
-    """Search Snov.io for company HR contacts using the v2 async API.
-    Free: 50 searches/month. Get credentials: https://snov.io → Settings → API
-
-    v2 workflow:
-      POST /v2/domain-search/domain-emails/start?domain={domain}  → task_hash
-      GET  /v2/domain-search/domain-emails/result/{task_hash}     → poll until completed
+async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Optional[dict]:
+    """Use SerpAPI to search Google for HR/recruiter contacts at the company.
+    Searches multiple queries to find a person's name, then constructs and
+    verifies the email using common corporate email patterns.
+    Uses the existing SERPAPI_API_KEY — no new credentials needed.
     """
     import httpx
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        # Step 1: Get OAuth access token (still v1)
-        token_resp = await client.post(
-            "https://api.snov.io/v1/oauth/access_token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": client_secret,
-            },
-        )
-        token_resp.raise_for_status()
-        access_token = token_resp.json().get("access_token")
-        if not access_token:
-            raise Exception("Snov.io: no access token returned")
+    EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+    company_clean = _norm_company(company)
 
-        headers = {"Authorization": f"Bearer {access_token}"}
+    # Try to find a direct email first, then fall back to name-based construction
+    search_queries = [
+        f'"{company}" recruiter OR "talent acquisition" OR "HR manager" email',
+        f'site:{domain} recruiter OR HR OR talent email',
+        f'"{company_clean}" recruiter LinkedIn',
+    ]
 
-        # Step 2: Start async domain email search (v2)
-        start_resp = await client.post(
-            "https://api.snov.io/v2/domain-search/domain-emails/start",
-            params={"domain": domain},
-            headers=headers,
-        )
-        start_resp.raise_for_status()
-        start_data = start_resp.json()
-        task_hash = start_data.get("task_hash")
-        if not task_hash:
-            raise Exception(f"Snov.io v2: no task_hash in response: {start_data}")
+    found_name = ""
+    found_direct_email = ""
 
-        # Step 3: Poll until completed (max 10 attempts × 2 s = 20 s)
-        data: dict = {}
-        for _ in range(10):
-            await asyncio.sleep(2)
-            result_resp = await client.get(
-                f"https://api.snov.io/v2/domain-search/domain-emails/result/{task_hash}",
-                headers=headers,
-            )
-            result_resp.raise_for_status()
-            data = result_resp.json()
-            if data.get("status") == "completed":
-                break
+    async with httpx.AsyncClient(timeout=20) as client:
+        for query in search_queries:
+            try:
+                resp = await client.get(
+                    "https://serpapi.com/search",
+                    params={
+                        "engine": "google",
+                        "q": query,
+                        "api_key": serpapi_key,
+                        "num": 5,
+                        "no_cache": "true",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
 
-    raw_emails = data.get("emails") or []
-    if not raw_emails:
-        return None
+                # Scan organic results for direct emails and/or names
+                for result in data.get("organic_results", []):
+                    snippet = (result.get("snippet") or "").lower()
+                    title = (result.get("title") or "").lower()
+                    combined = f"{title} {snippet}"
 
-    # v2 may return plain strings or dicts; normalise both
-    normalised: list[dict] = []
-    for entry in raw_emails:
-        if isinstance(entry, str):
-            normalised.append({"email": entry})
-        elif isinstance(entry, dict):
-            normalised.append(entry)
+                    # Look for direct emails in snippet
+                    raw_text = f"{result.get('title', '')} {result.get('snippet', '')}"
+                    for email in EMAIL_RE.findall(raw_text):
+                        email = email.lower()
+                        if "@" not in email:
+                            continue
+                        email_domain = email.split("@")[1]
+                        # Accept only emails matching company domain
+                        if domain in email_domain or email_domain in domain:
+                            local = email.split("@")[0]
+                            if not any(b in local for b in ("noreply", "no-reply", "admin", "sales", "marketing", "press", "legal", "privacy", "security")):
+                                found_direct_email = email
+                                break
 
-    def hr_score(e: dict) -> int:
-        position = (e.get("position") or e.get("title") or "").lower()
-        return sum(2 for kw in _HR_KEYWORDS if kw in position)
+                    if found_direct_email:
+                        break
 
-    best = sorted(normalised, key=hr_score, reverse=True)
-    for e in best:
-        email = e.get("email") or e.get("value") or ""
-        if not email or "@" not in email:
-            continue
+                    # Extract HR person's name if no direct email found
+                    if not found_name and any(kw in combined for kw in _HR_KEYWORDS):
+                        # Try to extract a name from the title (e.g. "Jane Smith - Recruiter at Acme Corp")
+                        title_raw = result.get("title", "")
+                        name_match = re.match(r"^([A-Z][a-z]+ [A-Z][a-z]+)", title_raw)
+                        if name_match:
+                            candidate_name = name_match.group(1)
+                            # Verify it looks like a person name (not a company name)
+                            if not any(noise in candidate_name.lower() for noise in ("jobs", "careers", "hiring", "talent", "team")):
+                                found_name = candidate_name
+
+                if found_direct_email:
+                    break
+
+            except Exception as e:
+                logger.debug("serpapi_hr_query_failed", query=query[:60], error=str(e))
+                continue
+
+    # Return direct email if found
+    if found_direct_email:
+        verified = await _verify_email_domain(found_direct_email)
         return {
-            "hr_name": f"{e.get('firstName', '') or e.get('first_name', '')} "
-                       f"{e.get('lastName', '') or e.get('last_name', '')}".strip() or "HR Team",
-            "hr_email": email,
-            "hr_title": e.get("position") or e.get("title") or "HR",
+            "hr_name": "HR Team",
+            "hr_email": found_direct_email,
+            "hr_title": "HR / Recruiter",
             "hr_linkedin": "",
-            "confidence_score": 0.70,
-            "source": "snov.io",
-            "verified": e.get("status") == "verified",
+            "confidence_score": 0.75 if verified else 0.55,
+            "source": "serpapi_search",
+            "verified": verified,
         }
+
+    # Fall back to name-based email construction
+    if found_name and domain:
+        constructed = await _construct_and_verify_email(found_name, domain)
+        if constructed:
+            return {
+                "hr_name": found_name,
+                "hr_email": constructed,
+                "hr_title": "Recruiter",
+                "hr_linkedin": "",
+                "confidence_score": 0.65,
+                "source": "serpapi_constructed",
+                "verified": True,
+            }
+
     return None
 
 
