@@ -141,23 +141,30 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[720px] p-0 overflow-hidden h-[580px] flex flex-col gap-0 border-none rounded-2xl shadow-2xl">
+      <DialogContent
+        className="max-w-[720px] p-0 overflow-hidden h-[580px] flex flex-col gap-0 border-none rounded-2xl"
+        style={{ boxShadow: "var(--shadow-dialog)" }}
+      >
         <div className="flex flex-1 h-full">
           {/* Sidebar */}
-          <div className="w-[180px] bg-slate-50 border-r border-slate-100 flex flex-col pt-6">
-            <div className="px-6 mb-6">
-              <h2 className="font-serif text-lg font-bold">Settings</h2>
+          <div className="w-[176px] bg-slate-50/80 border-r border-black/[0.06] flex flex-col pt-5">
+            <div className="px-5 mb-5">
+              <h2 className="font-serif text-[18px] tracking-tight">Settings</h2>
             </div>
-            <div className="flex flex-col">
+            <div className="flex flex-col gap-0.5 px-2">
               {TABS.map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`px-6 py-3 text-left text-sm font-medium font-sans transition-all border-l-[3px] ${activeTab === tab
-                    ? "bg-rose-50 text-rose-600 border-rose-600"
-                    : "text-slate-600 border-transparent hover:bg-slate-100"
-                    }`}
+                  className={`relative px-3 py-2.5 text-left text-[13px] font-medium transition-all rounded-xl ${
+                    activeTab === tab
+                      ? "bg-white text-primary shadow-xs border border-black/[0.05]"
+                      : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
+                  }`}
                 >
+                  {activeTab === tab && (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-r-full bg-primary" />
+                  )}
                   {tab}
                 </button>
               ))}
@@ -167,7 +174,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
           {/* Content */}
           <div className="flex-1 bg-white p-8 overflow-y-auto">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold font-serif text-slate-900">{activeTab}</h3>
+              <h3 className="text-[20px] font-serif tracking-tight text-slate-900">{activeTab}</h3>
             </div>
 
             {loading ? (
@@ -184,51 +191,50 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
               <>
                 {activeTab === "Profile" && (
                   <div className="space-y-5">
-                    <div className="grid gap-2">
-                      <label className="text-sm font-medium text-slate-700 font-sans">Full Name</label>
+                    <div className="grid gap-1.5">
+                      <label className="text-[12px] font-semibold text-slate-500 uppercase tracking-wide">Full Name</label>
                       <input
                         type="text"
                         value={profileName}
                         onChange={e => setProfileName(e.target.value)}
-                        className="h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm font-sans focus:border-rose-400 focus:bg-white transition-colors outline-none"
+                        className="h-10 px-3 rounded-xl border border-black/[0.09] bg-slate-50/80 text-[13px] font-sans focus:border-primary focus:bg-white focus:ring-[3px] focus:ring-primary/10 transition-all outline-none"
                       />
                     </div>
-                    <div className="grid gap-2">
-                      <label className="text-sm font-medium text-slate-700 font-sans">Email</label>
+                    <div className="grid gap-1.5">
+                      <label className="text-[12px] font-semibold text-slate-500 uppercase tracking-wide">Email</label>
                       <input
                         type="email"
                         defaultValue={user?.email || ""}
                         readOnly
-                        className="h-10 px-3 rounded-lg border border-slate-200 bg-slate-100 text-slate-500 text-sm font-sans cursor-not-allowed outline-none"
+                        className="h-10 px-3 rounded-xl border border-black/[0.07] bg-slate-100/80 text-slate-400 text-[13px] font-sans cursor-not-allowed outline-none"
                       />
                     </div>
-                    <div className="grid gap-2">
-                      <label className="text-sm font-medium text-slate-700 font-sans flex items-center gap-2">
-                        <Linkedin size={15} className="text-blue-600" />
+                    <div className="grid gap-1.5">
+                      <label className="text-[12px] font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-2">
+                        <Linkedin size={13} className="text-blue-600" />
                         LinkedIn URL
                       </label>
-                      <div className="relative">
-                        <input
-                          type="url"
-                          value={linkedinUrl}
-                          onChange={e => setLinkedinUrl(e.target.value)}
-                          placeholder="https://linkedin.com/in/your-profile"
-                          className="h-10 w-full pl-3 pr-3 rounded-lg border border-slate-200 bg-slate-50 text-sm font-sans focus:border-blue-400 focus:bg-white transition-colors outline-none"
-                        />
-                      </div>
-                      <p className="text-[10px] text-slate-400 font-sans">
-                        The agent will include this link in every application email it sends on your behalf.
+                      <input
+                        type="url"
+                        value={linkedinUrl}
+                        onChange={e => setLinkedinUrl(e.target.value)}
+                        placeholder="https://linkedin.com/in/your-profile"
+                        className="h-10 w-full px-3 rounded-xl border border-black/[0.09] bg-slate-50/80 text-[13px] font-sans focus:border-primary focus:bg-white focus:ring-[3px] focus:ring-primary/10 transition-all outline-none"
+                      />
+                      <p className="text-[11px] text-slate-400 font-sans">
+                        Included in every application email sent on your behalf.
                       </p>
                     </div>
-                    <div className="pt-2">
+                    <div className="pt-1">
                       <button
                         onClick={handleSaveProfile}
                         disabled={savingProfile}
-                        className={`px-4 py-2 rounded-lg text-sm font-semibold font-sans transition-colors disabled:opacity-60 ${
+                        className={`px-5 py-2 rounded-xl text-[13px] font-semibold transition-all active:scale-[0.97] disabled:opacity-60 ${
                           profileSaved
                             ? "bg-green-500 text-white"
-                            : "bg-primary text-white hover:bg-rose-700"
+                            : "bg-primary text-white hover:brightness-110"
                         }`}
+                        style={{ boxShadow: "var(--shadow-brand-sm)" }}
                       >
                         {savingProfile ? "Saving..." : profileSaved ? "✓ Saved" : "Save Changes"}
                       </button>

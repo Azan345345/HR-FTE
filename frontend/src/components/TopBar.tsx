@@ -44,14 +44,12 @@ export function TopBar() {
     return () => clearInterval(interval);
   }, []);
 
-  // Load preferred model from backend
   useEffect(() => {
     getPreferredModel()
       .then(d => setSelectedModel(d.preferred_model))
       .catch(() => {});
   }, []);
 
-  // Close model picker on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
@@ -72,110 +70,124 @@ export function TopBar() {
 
   return (
     <motion.header
-      className="h-[60px] w-full flex items-center justify-between px-6 border-b border-slate-100 backdrop-blur-md bg-white/90 z-50 flex-shrink-0"
-      initial={{ opacity: 0, y: -20 }}
+      className="h-[60px] w-full flex items-center justify-between px-6 border-b border-black/[0.05] bg-white/95 backdrop-blur-xl z-50 flex-shrink-0"
+      style={{ boxShadow: "0 1px 0 rgba(0,0,0,0.04)" }}
+      initial={{ opacity: 0, y: -16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, delay: 0.3, ease: "easeOut" }}
+      transition={{ duration: 0.4, delay: 0.3, ease: [0.16, 1, 0.32, 1] }}
     >
-      {/* Left */}
-      <div className="flex items-center">
-        <h1 className="font-serif text-lg font-bold tracking-tight">
+      {/* Left — Brand */}
+      <div className="flex items-center gap-4">
+        <h1 className="font-serif text-[18px] tracking-tight leading-none">
           <span className="text-foreground">Career</span>
           <span className="text-primary">Agent</span>
         </h1>
-        <div className="w-px h-6 bg-slate-200 mx-4" />
-        <span className="text-sm font-medium text-slate-700 font-sans mr-2">
+
+        <div className="w-px h-5 bg-black/[0.08]" />
+
+        <span className="text-[13px] font-medium text-slate-600 tracking-tight">
           Auto Job Assistant
         </span>
-        <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full text-[10px] font-bold uppercase tracking-wider border border-blue-100">
-          Dev Mode
-        </span>
-        <div className={`w-2 h-2 rounded-full ml-3 ${activeAgent ? "bg-green-500 animate-pulse" : "bg-slate-300"}`} />
 
-        {/* Command Palette Trigger */}
+        <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[10px] font-semibold uppercase tracking-wide border border-blue-100/80">
+          Dev
+        </span>
+
+        {/* Live indicator */}
+        <div className="flex items-center gap-1.5">
+          <div className={`w-1.5 h-1.5 rounded-full ${activeAgent ? "bg-primary animate-live-pulse" : "bg-slate-300"}`} />
+          {activeAgent && (
+            <span className="text-[10px] font-semibold text-primary tracking-tight">Running</span>
+          )}
+        </div>
+
+        {/* Command Palette shortcut */}
         <div
-          className="ml-6 px-2 py-0.5 bg-slate-100 border border-slate-200 rounded-md text-[11px] font-mono text-slate-400 cursor-pointer hover:bg-slate-200 transition-colors"
+          className="px-2 py-0.5 bg-slate-50 border border-black/[0.07] rounded-md text-[10px] font-mono text-slate-400 cursor-pointer hover:bg-slate-100 transition-colors select-none"
           onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
         >
           ⌘K
         </div>
       </div>
 
-      {/* Center — Pipeline */}
+      {/* Center — Pipeline steps */}
       <div className="flex items-center gap-1">
         {PIPELINE_STEPS.map((step, i) => (
           <div key={step.label} className="flex items-center group cursor-pointer">
             <div className="flex flex-col items-center">
               <div className="relative">
                 <div
-                  className={`w-2 h-2 rounded-full transition-colors ${step.done
-                    ? "bg-primary"
-                    : step.current
-                      ? "bg-primary group-hover:scale-125 transition-transform"
-                      : "bg-slate-200 group-hover:bg-slate-300"
-                    }`}
+                  className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                    step.done
+                      ? "bg-primary"
+                      : step.current
+                        ? "bg-primary scale-125"
+                        : "bg-slate-200 group-hover:bg-slate-300"
+                  }`}
                 />
                 {step.current && (
-                  <div className="absolute inset-0 w-2 h-2 rounded-full bg-primary animate-ping opacity-40" />
+                  <div className="absolute inset-0 w-2 h-2 rounded-full bg-primary animate-ping opacity-50" />
                 )}
               </div>
-              <span className={`text-[10px] font-medium mt-1 font-sans group-hover:underline ${step.current ? "text-primary" : "text-slate-500"}`}>
+              <span className={`text-[10px] font-medium mt-1 group-hover:underline underline-offset-2 tracking-tight ${
+                step.current ? "text-primary font-semibold" : step.done ? "text-primary/70" : "text-slate-400"
+              }`}>
                 {step.label}
               </span>
             </div>
             {i < PIPELINE_STEPS.length - 1 && (
-              <div className={`w-6 h-0.5 mx-1 mb-4 ${step.done ? "bg-primary" : "bg-slate-200"}`} />
+              <div className={`w-6 h-px mx-1 mb-4 transition-colors ${step.done ? "bg-primary/40" : "bg-slate-200"}`} />
             )}
           </div>
         ))}
       </div>
 
-      {/* Right */}
-      <div className="flex items-center gap-3">
+      {/* Right — Controls */}
+      <div className="flex items-center gap-2.5">
 
         {/* Model Picker */}
         <div className="relative" ref={modelPickerRef}>
           <button
             onClick={() => setShowModelPicker(!showModelPicker)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors text-xs font-medium text-slate-700 group"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-black/[0.08] bg-white hover:bg-slate-50 active:scale-[0.97] transition-all text-[12px] font-medium text-slate-700 group"
           >
             {(currentModel as any).isAuto
-              ? <Sparkles size={13} className="text-indigo-400" />
-              : <Cpu size={13} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
+              ? <Sparkles size={12} className="text-indigo-400" />
+              : <Cpu size={12} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
             }
             <span className="hidden sm:inline max-w-[110px] truncate">{currentModel.label}</span>
-            <span className={`hidden md:inline text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${currentModel.color}`}>
+            <span className={`hidden md:inline text-[9px] font-bold px-1.5 py-0.5 rounded-md border ${currentModel.color}`}>
               {(currentModel as any).isAuto ? "GPT-4o" : currentModel.provider}
             </span>
-            <ChevronDown size={11} className={`text-slate-400 transition-transform ${showModelPicker ? "rotate-180" : ""}`} />
+            <ChevronDown size={10} className={`text-slate-400 transition-transform ${showModelPicker ? "rotate-180" : ""}`} />
           </button>
 
           <AnimatePresence>
             {showModelPicker && (
               <motion.div
-                initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                initial={{ opacity: 0, y: 6, scale: 0.97 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 8, scale: 0.96 }}
-                transition={{ duration: 0.15 }}
-                className="absolute right-0 mt-2 w-68 bg-white border border-slate-100 rounded-2xl shadow-xl shadow-slate-200/60 p-2 z-[70]"
-                style={{ width: 272 }}
+                exit={{ opacity: 0, y: 6, scale: 0.97 }}
+                transition={{ duration: 0.15, ease: [0.16, 1, 0.32, 1] }}
+                className="absolute right-0 mt-2 bg-white border border-black/[0.07] rounded-2xl p-2 z-[70]"
+                style={{ width: 272, boxShadow: "var(--shadow-dialog)" }}
               >
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-3 py-1.5">Select Model</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400 px-3 py-2">Select Model</p>
                 {MODELS.map((model, idx) => {
                   const isSelected = model.id === selectedModel;
-                  const showDivider = idx === 1; // divider after Auto (before OpenAI models)
+                  const showDivider = idx === 1;
                   return (
                     <div key={model.id}>
-                      {showDivider && <div className="my-1.5 border-t border-slate-100" />}
+                      {showDivider && <div className="my-1.5 mx-1 border-t border-black/[0.05]" />}
                       <button
                         onClick={() => handleSelectModel(model.id)}
-                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-colors ${
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all duration-150 active:scale-[0.98] ${
                           isSelected ? "bg-slate-900" : "hover:bg-slate-50"
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           {(model as any).isAuto
-                            ? <Sparkles size={12} className={isSelected ? "text-indigo-400" : "text-indigo-400"} />
+                            ? <Sparkles size={12} className="text-indigo-400 flex-shrink-0" />
                             : <Zap size={12} className={isSelected ? "text-indigo-400" : "text-slate-300"} />
                           }
                           <div className="min-w-0">
@@ -184,17 +196,17 @@ export function TopBar() {
                                 {model.label}
                               </p>
                               {(model as any).isAuto && (
-                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-200">
+                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-md bg-green-100 text-green-700 border border-green-200">
                                   GPT-4o primary
                                 </span>
                               )}
                             </div>
-                            <p className={`text-[9px] ${isSelected ? "text-slate-400" : "text-slate-400"}`}>
+                            <p className={`text-[9px] mt-0.5 ${isSelected ? "text-slate-400" : "text-slate-400"}`}>
                               {(model as any).isAuto ? "GPT-4o primary · full fallback chain" : `${model.provider} · ${model.tier}`}
                             </p>
                           </div>
                         </div>
-                        {isSelected && <Check size={13} className="text-indigo-400 flex-shrink-0" />}
+                        {isSelected && <Check size={12} className="text-indigo-400 flex-shrink-0" />}
                       </button>
                     </div>
                   );
@@ -205,55 +217,63 @@ export function TopBar() {
         </div>
 
         {/* Clock */}
-        <span className="text-xs font-mono text-slate-400 min-w-[60px] text-right">
+        <span className="text-[11px] font-mono text-slate-400 min-w-[56px] text-right tabular-nums">
           {time}
         </span>
 
+        {/* Notifications */}
         <div className="relative">
-          <div
-            className="relative cursor-pointer"
+          <button
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-50 transition-colors relative"
             onClick={() => setShowNotifications(!showNotifications)}
           >
-            <Bell size={16} className={`transition-colors ${showNotifications ? "text-slate-700" : "text-slate-500 hover:text-slate-700"}`} />
-            <div className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-red-500" />
-          </div>
+            <Bell size={15} className={showNotifications ? "text-slate-700" : "text-slate-500"} />
+            <div className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-rose-500 border border-white" />
+          </button>
           <AnimatePresence>
             {showNotifications && <NotificationPanel />}
           </AnimatePresence>
         </div>
 
+        {/* Profile */}
         <div className="relative">
           <button
             onClick={() => setShowProfileMenu(!showProfileMenu)}
-            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all border-2 ${showProfileMenu ? "bg-rose-50 border-rose-200 shadow-sm shadow-rose-100" : "bg-slate-100 border-slate-200 hover:border-slate-300"}`}
+            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all border ${
+              showProfileMenu
+                ? "bg-primary/10 border-primary/20 shadow-xs"
+                : "bg-slate-50 border-black/[0.08] hover:border-black/[0.12] hover:bg-slate-100"
+            }`}
           >
-            <User size={18} className={showProfileMenu ? "text-rose-600" : "text-slate-500"} />
+            <User size={15} className={showProfileMenu ? "text-primary" : "text-slate-500"} />
           </button>
 
           <AnimatePresence>
             {showProfileMenu && (
               <motion.div
-                initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                initial={{ opacity: 0, y: 8, scale: 0.96 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="absolute right-0 mt-2 w-56 bg-white border border-slate-100 rounded-2xl shadow-xl shadow-slate-200/50 p-2 z-[60]"
+                exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                transition={{ duration: 0.15, ease: [0.16, 1, 0.32, 1] }}
+                className="absolute right-0 mt-2 w-56 bg-white border border-black/[0.07] rounded-2xl p-2 z-[60]"
+                style={{ boxShadow: "var(--shadow-dialog)" }}
               >
-                <div className="px-3 py-2 border-b border-slate-50 mb-1">
-                  <p className="text-xs font-bold text-slate-900 truncate">{user?.name || "User"}</p>
-                  <p className="text-[10px] text-slate-400 truncate">{user?.email || "user@example.com"}</p>
+                <div className="px-3 py-2.5 border-b border-black/[0.05] mb-1">
+                  <p className="text-[12px] font-semibold text-slate-900 truncate">{user?.name || "User"}</p>
+                  <p className="text-[10px] text-slate-400 truncate mt-0.5">{user?.email || "user@example.com"}</p>
                 </div>
                 <a
                   href="https://github.com/Azan345345/HR-FTE.git"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all"
+                  className="flex items-center gap-3 px-3 py-2 rounded-xl text-[12px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all"
                 >
                   <Github size={14} className="text-slate-400" />
                   View Repository
                 </a>
                 <button
                   onClick={() => { logout(); setShowProfileMenu(false); }}
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-rose-600 hover:bg-rose-50 transition-all text-left"
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[12px] font-medium text-rose-600 hover:bg-rose-50 transition-all text-left"
                 >
                   <LogOut size={14} className="text-rose-500" />
                   Sign Out

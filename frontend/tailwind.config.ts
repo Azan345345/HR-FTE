@@ -14,14 +14,21 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"DM Sans"', '"Noto Sans"', 'sans-serif'],
-        serif: ['"Libre Baskerville"', '"Noto Serif"', 'serif'],
+        sans: ['"Inter"', 'system-ui', 'sans-serif'],
+        serif: ['"Instrument Serif"', 'Georgia', 'serif'],
         mono: ['"JetBrains Mono"', 'monospace'],
       },
       boxShadow: {
-        'float': '0 12px 40px -4px rgba(0,0,0,0.1)',
+        /* Layered shadow system — Aria/Linear inspired */
+        'xs':        '0 1px 2px rgba(0,0,0,0.04)',
+        'card':      '0 1px 3px rgba(0,0,0,0.04), 0 4px 16px -4px rgba(0,0,0,0.06)',
+        'elevated':  '0 4px 20px -4px rgba(0,0,0,0.08), 0 12px 40px -8px rgba(0,0,0,0.05)',
+        'float':     '0 8px 32px -4px rgba(0,0,0,0.12), 0 2px 8px -2px rgba(0,0,0,0.06)',
+        'dialog':    '0 24px 64px -12px rgba(0,0,0,0.14), 0 8px 24px -8px rgba(0,0,0,0.08)',
         'glow-rose': '0 0 24px rgba(7,169,223,0.22)',
         'glow-brand': '0 0 24px rgba(7,169,223,0.22)',
+        'brand-sm':  '0 2px 12px -2px rgba(7,169,223,0.35)',
+        'brand-lg':  '0 8px 32px -4px rgba(7,169,223,0.30)',
       },
       colors: {
         border: "hsl(var(--border))",

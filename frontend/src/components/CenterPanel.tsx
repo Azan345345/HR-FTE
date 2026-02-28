@@ -458,7 +458,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         ref={scrollContainerRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-6 py-6 space-y-5"
-        style={{ background: "linear-gradient(180deg, #fafafa 0%, #ffffff 100%)" }}
+        style={{ background: "linear-gradient(180deg, #f8fafc 0%, #ffffff 60%)" }}
       >
         {/* Empty State */}
         {messages.length === 0 && !isSending && (
@@ -469,44 +469,50 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             className="flex flex-col items-center justify-center h-full min-h-[420px] px-4"
           >
             {/* Brand mark */}
-            <div className="relative mb-7">
-              <div className="w-20 h-20 rounded-3xl bg-primary flex items-center justify-center shadow-lg" style={{ boxShadow: "0 8px 32px -4px hsl(195 94% 45% / 40%)" }}>
-                <Bot size={34} className="text-white" />
+            <div className="relative mb-8">
+              <div
+                className="w-[72px] h-[72px] rounded-[22px] bg-primary flex items-center justify-center"
+                style={{ boxShadow: "0 8px 32px -4px hsl(195 94% 45% / 40%), 0 2px 8px -2px hsl(195 94% 45% / 20%)" }}
+              >
+                <Bot size={30} className="text-white" />
               </div>
               <motion.div
-                className="absolute -bottom-1 -right-1 w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center shadow-md"
+                className="absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center"
+                style={{ boxShadow: "0 2px 8px rgba(16,185,129,0.40)" }}
                 animate={{ scale: [1, 1.15, 1] }}
-                transition={{ duration: 2, repeat: Infinity }}
+                transition={{ duration: 2.5, repeat: Infinity }}
               >
-                <Sparkles size={12} className="text-white" />
+                <Sparkles size={11} className="text-white" />
               </motion.div>
             </div>
 
-            <h2 className="text-[26px] font-serif font-bold text-slate-900 mb-2 text-center">
+            <h2 className="text-[26px] font-serif tracking-tight text-slate-900 mb-2 text-center">
               <span className="text-slate-800">Career</span>
-              <span className="text-primary">Agent</span> is ready
+              <span className="text-primary">Agent</span>
+              <span className="text-slate-800"> is ready</span>
             </h2>
-            <p className="text-sm text-slate-500 font-sans max-w-sm text-center mb-8 leading-relaxed">
-              Your AI assistant for job search, resume tailoring, HR outreach, and interview prep — all in one conversation.
+            <p className="text-[13px] text-slate-500 max-w-[340px] text-center mb-8 leading-[1.65]">
+              Job search · Resume tailoring · HR outreach · Interview prep — all in one conversation.
             </p>
 
             {/* Suggestion cards */}
-            <div className="grid grid-cols-2 gap-3 w-full max-w-md">
+            <div className="grid grid-cols-2 gap-2.5 w-full max-w-[420px]">
               {SUGGESTIONS.map((s, i) => (
                 <motion.button
                   key={i}
-                  initial={{ opacity: 0, y: 12 }}
+                  initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.2 + i * 0.08, duration: 0.3 }}
+                  transition={{ delay: 0.15 + i * 0.07, duration: 0.35, ease: [0.16, 1, 0.32, 1] }}
                   onClick={() => handleSend(s.text)}
-                  className={`flex flex-col gap-2.5 p-4 bg-gradient-to-br ${s.bg} border ${s.border} rounded-2xl text-left hover:shadow-md transition-all group`}
+                  className={`flex flex-col gap-3 p-4 bg-gradient-to-br ${s.bg} border ${s.border} rounded-2xl text-left hover:shadow-card hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 group`}
                 >
-                  <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${s.gradient} flex items-center justify-center shadow-sm`}>
-                    <s.icon size={15} className="text-white" />
+                  <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${s.gradient} flex items-center justify-center`}
+                    style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.15)" }}>
+                    <s.icon size={14} className="text-white" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">{s.label}</p>
-                    <p className="text-[12px] font-medium text-slate-700 leading-tight">{s.text}</p>
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-[0.07em] mb-1">{s.label}</p>
+                    <p className="text-[12px] font-medium text-slate-700 leading-snug">{s.text}</p>
                   </div>
                 </motion.button>
               ))}
@@ -569,8 +575,11 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       </AnimatePresence>
 
       {/* Input Area */}
-      <div className="px-6 py-4 border-t border-slate-100 bg-white/95 backdrop-blur-sm flex-shrink-0">
-        <div className="relative w-full bg-white border border-slate-200 rounded-2xl shadow-sm focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
+      <div className="px-5 py-4 border-t border-black/[0.05] bg-white/98 backdrop-blur-sm flex-shrink-0">
+        <div
+          className="relative w-full bg-white rounded-2xl transition-all duration-200 focus-within:ring-[3px] focus-within:ring-primary/10"
+          style={{ border: "1px solid rgba(0,0,0,0.09)", boxShadow: "var(--shadow-card)" }}
+        >
           <textarea
             ref={inputRef}
             rows={1}
@@ -589,7 +598,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             }}
             disabled={isSending}
             placeholder="Message CareerAgent… (Enter to send, Shift+Enter for newline)"
-            className="w-full px-5 pt-3.5 pb-12 bg-transparent text-sm text-foreground font-sans placeholder:text-slate-400 outline-none resize-none leading-relaxed disabled:opacity-50 max-h-40"
+            className="w-full px-5 pt-3.5 pb-12 bg-transparent text-[13px] text-foreground placeholder:text-slate-400 outline-none resize-none leading-relaxed disabled:opacity-50 max-h-40"
             style={{ minHeight: "52px" }}
           />
           {/* Bottom toolbar */}
@@ -597,22 +606,23 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className="p-2 hover:bg-slate-100 rounded-xl transition-colors disabled:opacity-40 flex items-center gap-1.5 text-slate-400 hover:text-slate-600"
+              className="p-2 hover:bg-slate-50 rounded-xl transition-colors disabled:opacity-40 flex items-center gap-1.5 text-slate-400 hover:text-slate-600"
               title="Attach file (PDF, DOCX, TXT, MD)"
             >
-              <Paperclip size={16} />
+              <Paperclip size={15} />
               <span className="text-[11px] font-medium hidden sm:block">Attach</span>
             </button>
             <button
               onClick={() => handleSend()}
               disabled={!inputValue.trim() || isSending}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all duration-200 ${
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-semibold transition-all duration-200 active:scale-[0.96] ${
                 inputValue.trim() && !isSending
-                  ? "bg-primary hover:brightness-95 text-white shadow-sm"
+                  ? "bg-primary text-white hover:brightness-110"
                   : "bg-slate-100 text-slate-300 cursor-not-allowed"
               }`}
+              style={inputValue.trim() && !isSending ? { boxShadow: "var(--shadow-brand-sm)" } : {}}
             >
-              <ArrowUp size={14} />
+              <ArrowUp size={13} />
               Send
             </button>
           </div>

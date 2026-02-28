@@ -41,29 +41,39 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
   };
 
   return (
-    <div className="relative w-full h-screen flex flex-col items-center justify-center overflow-hidden bg-background">
+    <div className="relative w-full h-screen flex flex-col items-center justify-center overflow-hidden bg-slate-50">
+
+      {/* Subtle dot-grid backdrop */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          backgroundImage: "radial-gradient(circle, rgba(0,0,0,0.05) 1px, transparent 1px)",
+          backgroundSize: "24px 24px",
+        }}
+      />
+
       {/* Ambient blob 1 — top-right */}
       <motion.div
-        className="absolute top-[15%] right-[15%] w-[600px] h-[600px] rounded-full bg-rose-50 opacity-30 pointer-events-none"
-        style={{ filter: "blur(80px)", animation: "drift 20s ease-in-out infinite" }}
+        className="absolute top-[12%] right-[12%] w-[520px] h-[520px] rounded-full bg-rose-50 opacity-60 pointer-events-none"
+        style={{ filter: "blur(90px)", animation: "drift 22s ease-in-out infinite" }}
         animate={isExiting ? { opacity: 0 } : {}}
         transition={{ duration: 0.6 }}
       />
 
       {/* Ambient blob 2 — bottom-left */}
       <motion.div
-        className="absolute bottom-[10%] left-[10%] w-[500px] h-[500px] rounded-full bg-slate-100 opacity-20 pointer-events-none"
-        style={{ filter: "blur(80px)", animation: "drift-reverse 18s ease-in-out infinite" }}
+        className="absolute bottom-[8%] left-[8%] w-[440px] h-[440px] rounded-full bg-primary/10 opacity-50 pointer-events-none"
+        style={{ filter: "blur(90px)", animation: "drift-reverse 18s ease-in-out infinite" }}
         animate={isExiting ? { opacity: 0 } : {}}
         transition={{ duration: 0.6 }}
       />
 
-      {/* Floating brand logo */}
+      {/* Brand mark */}
       <motion.div
         className="flex flex-col items-center relative z-10"
-        initial={{ opacity: 0, y: -15, scale: 0.92 }}
+        initial={{ opacity: 0, y: -15, scale: 0.94 }}
         animate={isExiting ? { opacity: 0, y: -30, filter: "blur(4px)" } : { opacity: 1, y: 0, scale: 1 }}
-        transition={isExiting ? { duration: 0.5, delay: 0.3 } : { duration: 0.8, ease: "easeOut", delay: 0.2 }}
+        transition={isExiting ? { duration: 0.5, delay: 0.3 } : { duration: 0.8, ease: [0.16, 1, 0.32, 1], delay: 0.2 }}
         style={{ willChange: "transform" }}
       >
         <motion.div
@@ -71,17 +81,17 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
           transition={{ duration: 6, ease: "easeInOut", repeat: Infinity, repeatType: "loop" }}
           style={{ willChange: "transform" }}
         >
-          <h1 className="text-5xl font-serif font-bold tracking-tight">
+          <h1 className="text-5xl font-serif font-normal tracking-tight">
             <span className="text-foreground">Career</span>
             <span className="text-primary">Agent</span>
           </h1>
-          <p className="mt-1 text-xs text-slate-400 uppercase tracking-[0.15em] text-center font-sans">
+          <p className="mt-2 text-[11px] text-slate-400 uppercase tracking-[0.18em] text-center font-sans font-medium">
             AI-Powered Job Assistant
           </p>
         </motion.div>
       </motion.div>
 
-      {/* Greeting — word-by-word stagger */}
+      {/* Animated greeting */}
       <motion.div
         className="mt-8 flex flex-wrap justify-center gap-x-2"
         initial="initial"
@@ -94,10 +104,10 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
         {GREETING_WORDS.map((word, i) => (
           <motion.span
             key={i}
-            className="text-2xl font-serif text-slate-700"
+            className="text-[22px] font-serif text-slate-700"
             variants={{
               initial: { opacity: 0, y: 12, filter: "blur(4px)" },
-              animate: { opacity: 1, y: 0, filter: "blur(0px)", transition: { duration: 0.5, ease: "easeOut" } },
+              animate: { opacity: 1, y: 0, filter: "blur(0px)", transition: { duration: 0.5, ease: [0.16, 1, 0.32, 1] } },
               exit: { opacity: 0, filter: "blur(4px)", transition: { duration: 0.3 } },
             }}
           >
@@ -108,7 +118,7 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
 
       {/* Subtitle */}
       <motion.p
-        className="mt-3 text-base text-muted-foreground font-sans max-w-md text-center"
+        className="mt-3 text-[14px] text-slate-500 font-sans max-w-md text-center leading-relaxed"
         initial={{ opacity: 0, y: 8 }}
         animate={isExiting ? { opacity: 0, filter: "blur(4px)" } : { opacity: 1, y: 0 }}
         transition={isExiting ? { duration: 0.3, delay: 0.1 } : { duration: 0.6, delay: 1.2, ease: "easeOut" }}
@@ -116,9 +126,10 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
         {isLogin ? "Welcome back. Let's find your next role." : "Create an account to automate your job search."}
       </motion.p>
 
+      {/* Error */}
       {error && (
         <motion.p
-          className="mt-2 text-sm text-red-500 font-medium"
+          className="mt-2 text-[13px] text-red-500 font-medium"
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
         >
@@ -126,59 +137,73 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
         </motion.p>
       )}
 
-      {/* Central Auth Form */}
+      {/* Auth form — glass card */}
       <AnimatePresence mode="wait">
         <motion.form
           key="auth-form"
           onSubmit={handleSubmit}
-          className="mt-8 w-[min(400px,90vw)] flex flex-col gap-4 relative z-10"
-          initial={{ opacity: 0, y: 30, scale: 0.95 }}
+          className="mt-8 w-[min(420px,90vw)] flex flex-col gap-3 relative z-10"
+          initial={{ opacity: 0, y: 24, scale: 0.97 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ type: "spring", stiffness: 120, damping: 20, delay: 1.4 }}
+          transition={{ type: "spring", stiffness: 140, damping: 22, delay: 1.4 }}
+          style={{
+            background: "rgba(255,255,255,0.85)",
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+            border: "1px solid rgba(255,255,255,0.80)",
+            borderRadius: "20px",
+            padding: "24px",
+            boxShadow: "0 8px 40px -8px rgba(0,0,0,0.12), 0 2px 8px -2px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.9)",
+          }}
         >
-          <div className="h-14 bg-background border border-border rounded-xl shadow-sm flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10">
-            <Mail size={18} className="text-slate-400 flex-shrink-0" />
+          {/* Email input */}
+          <div className="h-12 bg-white/70 border border-black/[0.09] rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white">
+            <Mail size={15} className="text-slate-400 flex-shrink-0" />
             <input
               ref={emailRef}
               type="email"
               value={email}
               onChange={(e) => { setEmail(e.target.value); clearError(); }}
               placeholder="Email address"
-              className="flex-1 bg-transparent border-none outline-none text-base font-sans text-foreground placeholder:text-slate-400 caret-primary"
+              className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
               required
             />
           </div>
 
-          <div className="h-14 bg-background border border-border rounded-xl shadow-sm flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10">
-            <Lock size={18} className="text-slate-400 flex-shrink-0" />
+          {/* Password input */}
+          <div className="h-12 bg-white/70 border border-black/[0.09] rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white">
+            <Lock size={15} className="text-slate-400 flex-shrink-0" />
             <input
               type="password"
               value={password}
               onChange={(e) => { setPassword(e.target.value); clearError(); }}
               placeholder="Password"
-              className="flex-1 bg-transparent border-none outline-none text-base font-sans text-foreground placeholder:text-slate-400 caret-primary"
+              className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
               required
             />
           </div>
 
+          {/* Submit */}
           <button
             type="submit"
             disabled={!email.trim() || !password.trim() || isLoading}
-            className="h-14 mt-2 rounded-xl flex items-center justify-center gap-2 transition-all duration-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:pointer-events-none bg-primary text-primary-foreground hover:bg-rose-700 hover:shadow-glow-rose active:scale-[0.98]"
+            className="h-12 mt-1 rounded-xl flex items-center justify-center gap-2 transition-all duration-200 disabled:opacity-40 disabled:pointer-events-none bg-primary text-white hover:brightness-110 active:scale-[0.98]"
+            style={{ boxShadow: "var(--shadow-brand-sm)" }}
           >
-            {isLoading ? <Loader2 size={20} className="animate-spin" /> : (
+            {isLoading ? <Loader2 size={18} className="animate-spin" /> : (
               <>
-                <span className="font-medium text-base">{isLogin ? "Sign In" : "Create Account"}</span>
-                <ArrowRight size={18} />
+                <span className="font-semibold text-[14px]">{isLogin ? "Sign In" : "Create Account"}</span>
+                <ArrowRight size={16} />
               </>
             )}
           </button>
 
-          <div className="text-center mt-2">
+          {/* Toggle */}
+          <div className="text-center mt-1">
             <button
               type="button"
               onClick={() => { setIsLogin(!isLogin); clearError(); }}
-              className="text-sm text-slate-500 hover:text-primary transition-colors"
+              className="text-[12px] text-slate-500 hover:text-primary transition-colors font-medium"
             >
               {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
             </button>
@@ -188,7 +213,7 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
 
       {/* Footer */}
       <motion.p
-        className="absolute bottom-6 text-[11px] font-sans text-slate-400"
+        className="absolute bottom-6 text-[11px] font-sans text-slate-400 tracking-wide"
         initial={{ opacity: 0 }}
         animate={isExiting ? { opacity: 0 } : { opacity: 1 }}
         transition={isExiting ? { duration: 0.3 } : { delay: 2.5, duration: 0.6 }}
