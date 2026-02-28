@@ -1,111 +1,79 @@
-"""
-Digital FTE - API Quota Manager (Redis-based)
-Tracks RPM/RPD/TPM per provider and warns at 80% usage.
-"""
+"""API quota tracking using in-memory counters (Upstash Redis optional)."""
 
 import structlog
-from datetime import date
-
-from app.db.redis_client import redis_client
+from datetime import datetime
+from typing import Dict, Tuple
+from app.config import settings
+from app.core.llm_router import MODEL_CONFIGS
 
 logger = structlog.get_logger()
 
+# In-memory quota tracking (works without Redis)
+_usage: Dict[str, int] = {}  # key → count
 
-class QuotaManager:
-    """Track and enforce API quota limits using Redis counters."""
 
-    LIMITS = {
-        "gemini": {
-            "gemini-2.0-flash": {"rpm": 15, "rpd": 1500, "tpm": 1_000_000},
-        },
-        "groq": {
-            "llama-3.3-70b-versatile": {"rpm": 30, "rpd": 14_400, "tpm": 131_072},
-            "mixtral-8x7b-32768": {"rpm": 30, "rpd": 14_400, "tpm": 131_072},
-            "llama-3.1-8b-instant": {"rpm": 30, "rpd": 14_400, "tpm": 131_072},
-        },
-        "serpapi": {"default": {"rpd": 100}},
-        "hunter": {"default": {"rpd": 25}},
-    }
+def _key(provider: str, model: str, period: str) -> str:
+    return f"quota:{provider}:{model}:{period}"
 
-    # ── Keys ─────────────────────────────────────────
 
-    @staticmethod
-    def _rpm_key(provider: str, model: str) -> str:
-        return f"quota:{provider}:{model}:rpm"
+async def get_quota_usage(provider: str, model: str, period: str = "rpd") -> int:
+    """Get current usage count for a provider/model/period."""
+    k = _key(provider, model, period)
+    return _usage.get(k, 0)
 
-    @staticmethod
-    def _rpd_key(provider: str, model: str) -> str:
-        return f"quota:{provider}:{model}:rpd:{date.today().isoformat()}"
 
-    @staticmethod
-    def _tpm_key(provider: str, model: str) -> str:
-        return f"quota:{provider}:{model}:tpm"
+async def increment_quota(provider: str, model: str, period: str = "rpd", amount: int = 1):
+    """Increment usage counter."""
+    k = _key(provider, model, period)
+    _usage[k] = _usage.get(k, 0) + amount
 
-    # ── Check ────────────────────────────────────────
 
-    async def can_use(self, provider: str, model: str = "default") -> bool:
-        """Return True if we are below 80% of rate limits."""
-        limits = self.LIMITS.get(provider, {}).get(model, {})
-        if not limits:
-            return True
+async def check_quota_available(model: str) -> Tuple[bool, float]:
+    """Check if a model has available quota.
 
-        # Check RPM
-        if "rpm" in limits:
-            current = int(await redis_client.get(self._rpm_key(provider, model)) or 0)
-            if current >= limits["rpm"] * 0.8:
-                logger.warning("quota_rpm_high", provider=provider, model=model, current=current)
-                return False
+    Returns:
+        (is_available, usage_percentage)
+    """
+    cfg = MODEL_CONFIGS.get(model)
+    if not cfg:
+        return True, 0.0
 
-        # Check RPD
-        if "rpd" in limits:
-            current = int(await redis_client.get(self._rpd_key(provider, model)) or 0)
-            if current >= limits["rpd"] * 0.8:
-                logger.warning("quota_rpd_high", provider=provider, model=model, current=current)
-                return False
+    provider = cfg["provider"]
+    limit = cfg.get("rpd", 999999)
+    used = await get_quota_usage(provider, model, "rpd")
+    pct = (used / limit) * 100 if limit > 0 else 0
 
-        return True
+    if pct >= 100:
+        logger.warning("quota_exhausted", model=model, used=used, limit=limit)
+        return False, pct
 
-    # ── Record ───────────────────────────────────────
+    if pct >= 80:
+        logger.warning("quota_warning", model=model, used=used, limit=limit, pct=f"{pct:.1f}%")
 
-    async def record_usage(
-        self, provider: str, model: str = "default", tokens: int = 0
-    ):
-        """Increment counters after a successful API call."""
-        pipe = redis_client.pipeline()
+    return True, pct
 
-        # RPM (expires in 60s)
-        rpm_key = self._rpm_key(provider, model)
-        pipe.incr(rpm_key)
-        pipe.expire(rpm_key, 60)
 
-        # RPD (expires in 24h)
-        rpd_key = self._rpd_key(provider, model)
-        pipe.incr(rpd_key)
-        pipe.expire(rpd_key, 86_400)
-
-        # TPM (expires in 60s)
-        if tokens > 0:
-            tpm_key = self._tpm_key(provider, model)
-            pipe.incrby(tpm_key, tokens)
-            pipe.expire(tpm_key, 60)
-
-        await pipe.execute()
-
-    # ── Status ───────────────────────────────────────
-
-    async def get_status(self, provider: str, model: str = "default") -> dict:
-        """Return current usage vs limits for a provider/model."""
-        limits = self.LIMITS.get(provider, {}).get(model, {})
-        rpm = int(await redis_client.get(self._rpm_key(provider, model)) or 0)
-        rpd = int(await redis_client.get(self._rpd_key(provider, model)) or 0)
-        tpm = int(await redis_client.get(self._tpm_key(provider, model)) or 0)
-        return {
+async def get_all_quota_status() -> list[dict]:
+    """Get quota status for all configured models."""
+    result = []
+    for model_id, cfg in MODEL_CONFIGS.items():
+        provider = cfg["provider"]
+        rpd_limit = cfg.get("rpd", 0)
+        used = await get_quota_usage(provider, model_id, "rpd")
+        pct = (used / rpd_limit) * 100 if rpd_limit > 0 else 0
+        result.append({
+            "model": model_id,
             "provider": provider,
-            "model": model,
-            "rpm": {"used": rpm, "limit": limits.get("rpm")},
-            "rpd": {"used": rpd, "limit": limits.get("rpd")},
-            "tpm": {"used": tpm, "limit": limits.get("tpm")},
-        }
+            "used": used,
+            "limit": rpd_limit,
+            "percentage": round(pct, 1),
+        })
+    return result
 
 
-quota_manager = QuotaManager()
+async def reset_daily_counters():
+    """Reset all daily counters (call at midnight)."""
+    keys_to_reset = [k for k in _usage if ":rpd" in k]
+    for k in keys_to_reset:
+        _usage[k] = 0
+    logger.info("daily_quota_reset", keys_reset=len(keys_to_reset))

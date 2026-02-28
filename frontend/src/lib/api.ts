@@ -1,4 +1,5 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// In dev: use Vite proxy (relative URL, no CORS). In prod: use VITE_API_URL env.
+const API_BASE = (import.meta as any).env?.VITE_API_URL || "";
 
 interface FetchOptions extends RequestInit {
     token?: string;

@@ -1,127 +1,122 @@
-"""
-Digital FTE - ORM Models
-All database tables as defined in Section 6.1 of the plan.
-"""
+"""ORM models for all database tables."""
 
 import uuid
-from datetime import datetime
-
+from datetime import datetime, date
 from sqlalchemy import (
-    Column, String, Text, Boolean, Integer, Float, Date,
-    ForeignKey, TIMESTAMP, UniqueConstraint, Index
+    Column, String, Text, Boolean, Integer, Float, DateTime, Date,
+    ForeignKey, UniqueConstraint, Index, JSON
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
-
 from app.db.database import Base
 
 
-# ── Helpers ──────────────────────────────────────────
+def _uuid():
+    return str(uuid.uuid4())
 
 
-def new_uuid():
-    return uuid.uuid4()
-
-
-# ── Users ────────────────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    id = Column(String, primary_key=True, default=_uuid)
     email = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     password_hash = Column(String(255), nullable=False)
-    google_oauth_token = Column(JSONB, nullable=True)
-    google_refresh_token = Column(Text, nullable=True)
-    preferences = Column(JSONB, server_default="{}")
-    created_at = Column(TIMESTAMP, server_default=func.now())
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    google_oauth_token = Column(JSON, default=None)
+    google_refresh_token = Column(Text, default=None)
+    preferences = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # relationships
     cvs = relationship("UserCV", back_populates="user", cascade="all, delete-orphan")
-    job_searches = relationship("JobSearch", back_populates="user", cascade="all, delete-orphan")
     applications = relationship("Application", back_populates="user", cascade="all, delete-orphan")
-    interview_preps = relationship("InterviewPrep", back_populates="user", cascade="all, delete-orphan")
-    integrations = relationship("UserIntegration", back_populates="user", cascade="all, delete-orphan")
 
 
-# ── User CVs ─────────────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# CVs
+# ---------------------------------------------------------------------------
 class UserCV(Base):
     __tablename__ = "user_cvs"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     file_name = Column(String(255), nullable=False)
     file_path = Column(Text, nullable=False)
-    file_type = Column(String(10), nullable=False)  # pdf, docx
-    parsed_data = Column(JSONB, nullable=False)
-    raw_text = Column(Text, nullable=True)
-    embedding_id = Column(String(255), nullable=True)
+    file_type = Column(String(10), nullable=False)
+    parsed_data = Column(JSON, default=dict)
+    raw_text = Column(Text, default=None)
     is_primary = Column(Boolean, default=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="cvs")
-    tailored_cvs = relationship("TailoredCV", back_populates="original_cv")
 
 
-# ── Job Searches ─────────────────────────────────────
+# ---------------------------------------------------------------------------
+# CV Embeddings
+# ---------------------------------------------------------------------------
+class CVEmbedding(Base):
+    __tablename__ = "cv_embeddings"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    cv_id = Column(String, ForeignKey("user_cvs.id", ondelete="CASCADE"), nullable=False)
+    section = Column(String(50), nullable=False)
+    content = Column(Text, nullable=False)
+    metadata_ = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ---------------------------------------------------------------------------
+# Job Searches
+# ---------------------------------------------------------------------------
 class JobSearch(Base):
     __tablename__ = "job_searches"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    cv_id = Column(UUID(as_uuid=True), ForeignKey("user_cvs.id"), nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    cv_id = Column(String, ForeignKey("user_cvs.id"), nullable=True)
     search_query = Column(Text, nullable=False)
-    target_role = Column(String(255), nullable=True)
-    target_location = Column(String(255), nullable=True)
-    filters = Column(JSONB, server_default="{}")
-    status = Column(String(50), default="pending")  # pending, searching, completed, failed
-    created_at = Column(TIMESTAMP, server_default=func.now())
+    target_role = Column(String(255), default=None)
+    target_location = Column(String(255), default=None)
+    filters = Column(JSON, default=dict)
+    status = Column(String(50), default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    user = relationship("User", back_populates="job_searches")
     jobs = relationship("Job", back_populates="search", cascade="all, delete-orphan")
 
 
-# ── Jobs ─────────────────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
 class Job(Base):
     __tablename__ = "jobs"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    search_id = Column(UUID(as_uuid=True), ForeignKey("job_searches.id", ondelete="CASCADE"), nullable=False)
-    external_id = Column(String(255), nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    search_id = Column(String, ForeignKey("job_searches.id", ondelete="CASCADE"), nullable=False)
+    external_id = Column(String(255), default=None)
     title = Column(String(255), nullable=False)
     company = Column(String(255), nullable=False)
-    location = Column(String(255), nullable=True)
-    salary_range = Column(String(100), nullable=True)
-    job_type = Column(String(50), nullable=True)  # full-time, remote, hybrid
+    location = Column(String(255), default=None)
+    salary_range = Column(String(100), default=None)
+    job_type = Column(String(50), default=None)
     description = Column(Text, nullable=False)
-    requirements = Column(JSONB, nullable=True)
-    nice_to_have = Column(JSONB, nullable=True)
-    responsibilities = Column(JSONB, nullable=True)
-    posted_date = Column(Date, nullable=True)
-    application_url = Column(Text, nullable=True)
-    source = Column(String(50), nullable=False)  # linkedin, indeed, glassdoor
-    match_score = Column(Float, nullable=True)
-    matching_skills = Column(JSONB, nullable=True)
-    missing_skills = Column(JSONB, nullable=True)
-    raw_data = Column(JSONB, nullable=True)
-    created_at = Column(TIMESTAMP, server_default=func.now())
+    requirements = Column(JSON, default=list)
+    nice_to_have = Column(JSON, default=list)
+    responsibilities = Column(JSON, default=list)
+    posted_date = Column(String(50), default=None)
+    application_url = Column(Text, default=None)
+    source = Column(String(50), nullable=False)
+    match_score = Column(Float, default=None)
+    matching_skills = Column(JSON, default=list)
+    missing_skills = Column(JSON, default=list)
+    raw_data = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     search = relationship("JobSearch", back_populates="jobs")
-    tailored_cvs = relationship("TailoredCV", back_populates="job", cascade="all, delete-orphan")
-    hr_contacts = relationship("HRContact", back_populates="job", cascade="all, delete-orphan")
-    applications = relationship("Application", back_populates="job", cascade="all, delete-orphan")
-    interview_preps = relationship("InterviewPrep", back_populates="job", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_jobs_search_id", "search_id"),
@@ -129,76 +124,87 @@ class Job(Base):
     )
 
 
-# ── Tailored CVs ────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Job Embeddings
+# ---------------------------------------------------------------------------
+class JobEmbedding(Base):
+    __tablename__ = "job_embeddings"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    search_id = Column(String, default=None)
+    title = Column(String(255), default=None)
+    company = Column(String(255), default=None)
+    source = Column(String(50), default=None)
+    content = Column(Text, nullable=False)
+    metadata_ = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ---------------------------------------------------------------------------
+# Tailored CVs
+# ---------------------------------------------------------------------------
 class TailoredCV(Base):
     __tablename__ = "tailored_cvs"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    original_cv_id = Column(UUID(as_uuid=True), ForeignKey("user_cvs.id"), nullable=True)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    tailored_data = Column(JSONB, nullable=False)
-    pdf_path = Column(Text, nullable=True)
-    cover_letter = Column(Text, nullable=True)
-    ats_score = Column(Float, nullable=True)
-    match_score = Column(Float, nullable=True)
-    changes_made = Column(JSONB, nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    original_cv_id = Column(String, ForeignKey("user_cvs.id"), nullable=True)
+    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    tailored_data = Column(JSON, nullable=False)
+    pdf_path = Column(Text, default=None)
+    cover_letter = Column(Text, default=None)
+    ats_score = Column(Float, default=None)
+    match_score = Column(Float, default=None)
+    changes_made = Column(JSON, default=dict)
     version = Column(Integer, default=1)
-    status = Column(String(50), default="draft")  # draft, approved, sent
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-    original_cv = relationship("UserCV", back_populates="tailored_cvs")
-    job = relationship("Job", back_populates="tailored_cvs")
+    status = Column(String(50), default="draft")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ── HR Contacts ──────────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# HR Contacts
+# ---------------------------------------------------------------------------
 class HRContact(Base):
     __tablename__ = "hr_contacts"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    hr_name = Column(String(255), nullable=True)
-    hr_email = Column(String(255), nullable=True)
-    hr_title = Column(String(255), nullable=True)
-    hr_linkedin = Column(String(255), nullable=True)
-    confidence_score = Column(Float, nullable=True)  # 0-1
-    source = Column(String(100), nullable=True)  # hunter.io, apollo, scraped
+    id = Column(String, primary_key=True, default=_uuid)
+    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    hr_name = Column(String(255), default=None)
+    hr_email = Column(String(255), default=None)
+    hr_title = Column(String(255), default=None)
+    hr_linkedin = Column(String(255), default=None)
+    confidence_score = Column(Float, default=None)
+    source = Column(String(100), default=None)
     verified = Column(Boolean, default=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-    job = relationship("Job", back_populates="hr_contacts")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ── Applications ─────────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
 class Application(Base):
     __tablename__ = "applications"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    tailored_cv_id = Column(UUID(as_uuid=True), ForeignKey("tailored_cvs.id"), nullable=True)
-    hr_contact_id = Column(UUID(as_uuid=True), ForeignKey("hr_contacts.id"), nullable=True)
-    email_subject = Column(Text, nullable=True)
-    email_body = Column(Text, nullable=True)
-    email_sent_at = Column(TIMESTAMP, nullable=True)
-    gmail_message_id = Column(String(255), nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    tailored_cv_id = Column(String, ForeignKey("tailored_cvs.id"), nullable=True)
+    hr_contact_id = Column(String, ForeignKey("hr_contacts.id"), nullable=True)
+    email_subject = Column(Text, default=None)
+    email_body = Column(Text, default=None)
+    email_sent_at = Column(DateTime, default=None)
+    gmail_message_id = Column(String(255), default=None)
     status = Column(String(50), default="pending_approval")
     user_approved = Column(Boolean, default=False)
-    user_approved_at = Column(TIMESTAMP, nullable=True)
+    user_approved_at = Column(DateTime, default=None)
     follow_up_count = Column(Integer, default=0)
-    last_follow_up_at = Column(TIMESTAMP, nullable=True)
-    notes = Column(Text, nullable=True)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    last_follow_up_at = Column(DateTime, default=None)
+    notes = Column(Text, default=None)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="applications")
-    job = relationship("Job", back_populates="applications")
 
     __table_args__ = (
         Index("idx_applications_user_id", "user_id"),
@@ -206,77 +212,74 @@ class Application(Base):
     )
 
 
-# ── Interview Preps ──────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# Interview Preps
+# ---------------------------------------------------------------------------
 class InterviewPrep(Base):
     __tablename__ = "interview_preps"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    application_id = Column(UUID(as_uuid=True), ForeignKey("applications.id"), nullable=True)
-    company_research = Column(JSONB, nullable=True)
-    technical_questions = Column(JSONB, nullable=True)
-    behavioral_questions = Column(JSONB, nullable=True)
-    situational_questions = Column(JSONB, nullable=True)
-    salary_research = Column(JSONB, nullable=True)
-    tips = Column(JSONB, nullable=True)
-    study_material_path = Column(Text, nullable=True)
-    prep_score = Column(Float, nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    application_id = Column(String, ForeignKey("applications.id"), nullable=True)
+    company_research = Column(JSON, default=dict)
+    technical_questions = Column(JSON, default=list)
+    behavioral_questions = Column(JSON, default=list)
+    situational_questions = Column(JSON, default=list)
+    salary_research = Column(JSON, default=dict)
+    tips = Column(JSON, default=list)
+    questions_to_ask = Column(JSON, default=list)
+    system_design_questions = Column(JSON, default=list)
+    coding_challenges = Column(JSON, default=list)
+    cultural_questions = Column(JSON, default=list)
+    study_plan = Column(JSON, default=dict)
+    study_material_path = Column(Text, default=None)
+    prep_score = Column(Float, default=None)
     status = Column(String(50), default="generating")
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-    user = relationship("User", back_populates="interview_preps")
-    job = relationship("Job", back_populates="interview_preps")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ── Agent Executions (Observability) ─────────────────
-
-
+# ---------------------------------------------------------------------------
+# Agent Executions (observability)
+# ---------------------------------------------------------------------------
 class AgentExecution(Base):
     __tablename__ = "agent_executions"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    session_id = Column(UUID(as_uuid=True), nullable=False)
-    agent_name = Column(String(100), nullable=False)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    session_id = Column(String, nullable=False, index=True)
+    agent_name = Column(String(100), nullable=False, index=True)
     action = Column(String(255), nullable=False)
-    plan = Column(Text, nullable=True)
-    input_data = Column(JSONB, nullable=True)
-    output_data = Column(JSONB, nullable=True)
-    llm_model = Column(String(100), nullable=True)
-    tokens_input = Column(Integer, nullable=True)
-    tokens_output = Column(Integer, nullable=True)
-    execution_time_ms = Column(Integer, nullable=True)
-    status = Column(String(50), nullable=True)  # started, completed, failed, retrying
-    error_message = Column(Text, nullable=True)
-    trace_id = Column(String(255), nullable=True)
-    langfuse_trace_id = Column(String(255), nullable=True)
-    parent_execution_id = Column(UUID(as_uuid=True), ForeignKey("agent_executions.id"), nullable=True)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-    __table_args__ = (
-        Index("idx_agent_executions_session", "session_id"),
-        Index("idx_agent_executions_agent", "agent_name"),
-    )
+    plan = Column(Text, default=None)
+    input_data = Column(JSON, default=dict)
+    output_data = Column(JSON, default=dict)
+    llm_model = Column(String(100), default=None)
+    tokens_input = Column(Integer, default=0)
+    tokens_output = Column(Integer, default=0)
+    execution_time_ms = Column(Integer, default=0)
+    status = Column(String(50), default=None)
+    error_message = Column(Text, default=None)
+    trace_id = Column(String(255), default=None)
+    langfuse_trace_id = Column(String(255), default=None)
+    parent_execution_id = Column(String, ForeignKey("agent_executions.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ── API Quota Usage ──────────────────────────────────
-
-
-class ApiQuotaUsage(Base):
+# ---------------------------------------------------------------------------
+# API Quota Usage
+# ---------------------------------------------------------------------------
+class APIQuotaUsage(Base):
     __tablename__ = "api_quota_usage"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    id = Column(String, primary_key=True, default=_uuid)
     provider = Column(String(100), nullable=False)
-    model = Column(String(100), nullable=True)
+    model = Column(String(100), default=None)
     date = Column(Date, nullable=False)
     requests_used = Column(Integer, default=0)
     tokens_used = Column(Integer, default=0)
-    requests_limit = Column(Integer, nullable=True)
-    tokens_limit = Column(Integer, nullable=True)
-    last_updated = Column(TIMESTAMP, server_default=func.now())
+    requests_limit = Column(Integer, default=None)
+    tokens_limit = Column(Integer, default=None)
+    last_updated = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("provider", "model", "date", name="uq_quota_provider_model_date"),
@@ -284,44 +287,38 @@ class ApiQuotaUsage(Base):
     )
 
 
-# ── Chat Messages ────────────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# Chat Messages
+# ---------------------------------------------------------------------------
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    session_id = Column(UUID(as_uuid=True), nullable=False)
-    role = Column(String(20), nullable=False)  # user, assistant, system, agent
-    agent_name = Column(String(100), nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    session_id = Column(String, nullable=False, index=True)
+    role = Column(String(20), nullable=False)
+    agent_name = Column(String(100), default=None)
     content = Column(Text, nullable=False)
-    metadata_ = Column("metadata", JSONB, nullable=True)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-    __table_args__ = (
-        Index("idx_chat_messages_session", "session_id"),
-    )
+    metadata_ = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ── User Integrations ───────────────────────────────
-
-
+# ---------------------------------------------------------------------------
+# User Integrations
+# ---------------------------------------------------------------------------
 class UserIntegration(Base):
     __tablename__ = "user_integrations"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    service_name = Column(String(100), nullable=False)  # gmail, drive, docs
-    access_token = Column(Text, nullable=True)
-    refresh_token = Column(Text, nullable=True)
-    token_expiry = Column(TIMESTAMP, nullable=True)
-    scopes = Column(JSONB, nullable=True)
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    service_name = Column(String(100), nullable=False)
+    access_token = Column(Text, default=None)
+    refresh_token = Column(Text, default=None)
+    token_expiry = Column(DateTime, default=None)
+    scopes = Column(JSON, default=list)
     is_active = Column(Boolean, default=True)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
-
-    user = relationship("User", back_populates="integrations")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("user_id", "service_name", name="uq_user_integration"),

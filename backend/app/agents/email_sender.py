@@ -1,122 +1,186 @@
-import time
+"""Email Sender Agent — composes and sends job application emails via Gmail API."""
+
+import os
 import json
 import structlog
-from typing import Dict, Any, List
-import uuid
-
-from langchain_core.messages import SystemMessage, HumanMessage
-
-from app.agents.state import DigitalFTEState
-from app.core.event_bus import event_bus
-from app.agents.prompts.email_sender import EMAIL_SENDER_SYSTEM_PROMPT, EMAIL_SENDER_USER_PROMPT
-from app.agents.cv_tailor import get_llm
+from typing import Optional
+from app.core.llm_router import get_llm
 
 logger = structlog.get_logger()
 
-async def email_sender_node(state: DigitalFTEState) -> dict:
-    session_id = state.get("user_id", "unknown")
-    
-    hr_contacts = state.get("hr_contacts", [])
-    jobs_found = state.get("jobs_found", [])
-    parsed_cv = state.get("parsed_cv", {})
-    
-    if not hr_contacts:
-        return {
-            "current_agent": "email_sender",
-            "agent_status": "error",
-            "errors": state.get("errors", []) + ["No HR contacts available to email."],
-        }
 
-    start_time = time.time()
-    pending_approvals = state.get("pending_approvals", [])
-    if pending_approvals is None:
-        pending_approvals = []
-        
+async def compose_application_email(
+    job_data: dict,
+    cv_data: dict,
+    hr_contact: dict,
+    cover_letter: Optional[str] = None,
+    linkedin_url: Optional[str] = None,
+) -> dict:
+    """Compose a professional application email.
+
+    Returns:
+        Dict with email_subject and email_body.
+    """
+    from app.core.skills import get_combined_skills
+
+    llm = get_llm(task="email_composition")
+    
+    # Load relevant skills
+    skills_context = get_combined_skills([
+        "email-writing",
+        "tone-guidelines"
+    ])
+
+    hr_name = hr_contact.get("hr_name", "Hiring Manager")
+    job_title = job_data.get("title", "the open position")
+    company = job_data.get("company", "your company")
+    candidate_name = cv_data.get("personal_info", {}).get("name", "the candidate")
+    linkedin_line = f"\n- LinkedIn: {linkedin_url}" if linkedin_url else ""
+
+    prompt = f"""You are an elite Career Communication Specialist.
+
+{skills_context}
+
+TASK: Compose a high-performance job application email following the SKILLS and RULES provided above.
+
+CRITICAL CONSTRAINTS:
+1. Use the AIDA framework (Attention, Interest, Desire, Action).
+2. Subject line must use one of the proven formulas from the skills.
+3. Keep the email under 160 words.
+4. No filler phrases (e.g., "I hope this email finds you well").
+5. Include a specific, low-friction CTA.
+6. If a LinkedIn URL is provided, naturally include it as a hyperlink or plain URL in the email signature or closing line (e.g., "linkedin.com/in/...").
+
+Details:
+- Candidate: {candidate_name}
+- Position: {job_title}
+- Company: {company}
+- HR Contact: {hr_name}{linkedin_line}
+- Cover letter basis: {(cover_letter or "")[:1000]}
+
+Return JSON:
+{{
+    "email_subject": "Subject line following proven formula",
+    "email_body": "Email body following AIDA framework",
+    "tone_analysis": "Brief note on tone calibration used"
+}}
+
+Return ONLY valid JSON.
+"""
+
     try:
-        await event_bus.agent_started(
-            session_id=session_id,
-            agent_name="email_sender",
-            plan="Draft personalized outreach emails for HR contacts",
-            estimated_time=15.0,
-        )
-
-        llm = get_llm()
-        
-        # Build dictionary of jobs for quick lookup
-        job_map = {str(j.get("id")): j for j in jobs_found}
-
-        for idx, contact in enumerate(hr_contacts):
-            job_id = contact.get("job_id")
-            job = job_map.get(job_id, {})
-            company_name = job.get("company", "the company")
-            hr_name = contact.get("hr_name", "Hiring Manager")
-            
-            await event_bus.agent_progress(
-                session_id=session_id,
-                agent_name="email_sender",
-                step=idx + 1, total_steps=len(hr_contacts),
-                current_action=f"Drafting email to {hr_name} at {company_name}",
-            )
-
-            # Invoke LLM to draft email
-            user_content = EMAIL_SENDER_USER_PROMPT.format(
-                job_title=job.get("title", "the role"),
-                company_name=company_name,
-                hr_name=hr_name,
-                candidate_summary=parsed_cv.get("summary", "")[:500] if parsed_cv else "",
-                matched_skills=", ".join(job.get("matching_skills", [])[:5])
-            )
-
-            messages = [
-                SystemMessage(content=EMAIL_SENDER_SYSTEM_PROMPT),
-                HumanMessage(content=user_content)
-            ]
-
-            response = await llm.ainvoke(messages)
-            content = response.content
-            
-            # Basic JSON cleanup
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].strip()
-
-            try:
-                email_data = json.loads(content)
-            except json.JSONDecodeError:
-                email_data = {
-                    "subject": f"Application for {job.get('title', 'Role')}",
-                    "body": f"Hi {hr_name},\n\nPlease find my application attached for the position at {company_name}.\n\nBest regards,"
-                }
-                
-            email_data["job_id"] = str(job_id)
-            email_data["hr_contact_id"] = contact.get("id", str(uuid.uuid4()))
-            pending_approvals.append(email_data)
-        
-        elapsed = time.time() - start_time
-        await event_bus.agent_completed(
-            session_id=session_id,
-            agent_name="email_sender",
-            result_summary=f"Drafted emails for {len(hr_contacts)} contacts. Awaiting user approval.",
-            time_taken=elapsed,
-        )
-
+        response = await llm.ainvoke(prompt)
+        content = response.content if hasattr(response, 'content') else str(response)
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.strip()
+        return json.loads(content)
+    except Exception as e:
+        logger.error("email_compose_error", error=str(e))
+        linkedin_sig = f"\nLinkedIn: {linkedin_url}" if linkedin_url else ""
         return {
-            "pending_approvals": pending_approvals,
-            "current_agent": "email_sender",
-            "agent_status": "completed",
-            "agent_plan": "Emails drafted, awaiting approval",
+            "email_subject": f"Application for {job_title} - {candidate_name}",
+            "email_body": (
+                f"Dear {hr_name},\n\n"
+                f"I am writing to express my interest in the {job_title} position at {company}. "
+                f"Please find my resume attached for your review.\n\n"
+                f"I look forward to hearing from you.\n\n"
+                f"Best regards,\n{candidate_name}{linkedin_sig}"
+            ),
         }
+
+
+async def send_via_gmail(
+    user_tokens: dict,
+    to_email: str,
+    subject: str,
+    body: str,
+    attachment_path: Optional[str] = None,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_filename: str = "Tailored_CV.pdf",
+) -> dict:
+    """Send email via Gmail API using user's OAuth tokens.
+
+    Falls back to env-configured credentials (GOOGLE_REFRESH_TOKEN) when
+    user_tokens doesn't contain client_id / client_secret.
+
+    Returns:
+        Dict with message_id and status.
+    """
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        import base64
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.application import MIMEApplication
+        from app.config import settings
+
+        # Resolve client credentials — prefer tokens dict, fall back to settings
+        client_id = (
+            user_tokens.get("client_id")
+            or settings.GOOGLE_OAUTH_CLIENT_ID
+            or None
+        )
+        client_secret = (
+            user_tokens.get("client_secret")
+            or settings.GOOGLE_OAUTH_CLIENT_SECRET
+            or None
+        )
+        refresh_token = (
+            user_tokens.get("refresh_token")
+            or settings.GOOGLE_REFRESH_TOKEN
+            or None
+        )
+        access_token = user_tokens.get("access_token") or None
+
+        if not refresh_token:
+            return {"message_id": None, "status": "failed",
+                    "error": "No refresh token available. Connect Gmail in Settings."}
+
+        creds = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
+        # Auto-refresh if expired or no access token
+        if not creds.valid:
+            creds.refresh(Request())
+
+        service = build("gmail", "v1", credentials=creds)
+
+        # Build email message — prefer in-memory bytes, fall back to file path
+        msg = MIMEMultipart()
+        msg.attach(MIMEText(body, "plain"))
+        if attachment_bytes:
+            part = MIMEApplication(attachment_bytes, _subtype="pdf")
+            part.add_header("Content-Disposition", "attachment", filename=attachment_filename)
+            msg.attach(part)
+        elif attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, "rb") as f:
+                part = MIMEApplication(f.read(), _subtype="pdf")
+                part.add_header("Content-Disposition", "attachment",
+                                filename=os.path.basename(attachment_path))
+                msg.attach(part)
+
+        msg["to"] = to_email
+        msg["subject"] = subject
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        result = service.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+
+        logger.info("gmail_sent", message_id=result.get("id"), to=to_email)
+        return {"message_id": result.get("id"), "status": "sent"}
 
     except Exception as e:
-        logger.error("email_sender_failed", error=str(e))
-        await event_bus.agent_error(
-            session_id=session_id,
-            agent_name="email_sender",
-            error_message=str(e),
-        )
-        return {
-            "current_agent": "email_sender",
-            "agent_status": "error",
-            "errors": state.get("errors", []) + [str(e)],
-        }
+        logger.error("gmail_send_error", error=str(e), exc_info=True)
+        return {"message_id": None, "status": "failed", "error": str(e)}

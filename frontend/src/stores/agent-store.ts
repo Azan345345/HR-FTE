@@ -1,5 +1,17 @@
 import { create } from "zustand";
 
+export interface LogEntry {
+    id: string;
+    time: string;
+    emoji: string;
+    agent: string;
+    title: string;
+    desc: string;
+    thought?: string;
+    status: "done" | "running" | "waiting" | "error";
+    duration?: string;
+    tokens?: string;
+}
 export type AgentName =
     | "supervisor"
     | "cv_parser"
@@ -10,7 +22,7 @@ export type AgentName =
     | "interview_prep"
     | "doc_generator";
 
-export type AgentStatus = "idle" | "processing" | "completed" | "error";
+export type AgentStatus = "idle" | "processing" | "completed" | "error" | "waiting";
 
 interface AgentInfo {
     name: AgentName;
@@ -19,15 +31,25 @@ interface AgentInfo {
     currentStep?: number;
     totalSteps?: number;
     currentAction?: string;
+    drafts?: {
+        cv?: any;
+        cover_letter?: string;
+        email?: string;
+        application_id?: string;
+    };
 }
 
 interface AgentStoreState {
     agents: Record<AgentName, AgentInfo>;
     activeAgent: AgentName | null;
     completedNodes: string[];
+    logs: LogEntry[];
     setAgentStatus: (name: AgentName, updates: Partial<AgentInfo>) => void;
     setActiveAgent: (name: AgentName | null) => void;
     addCompletedNode: (node: string) => void;
+    addLog: (log: Omit<LogEntry, "id" | "time">) => void;
+    updateLastLogStatus: (agent: string, status: LogEntry["status"]) => void;
+    setAgentDrafts: (name: AgentName, drafts: AgentInfo["drafts"]) => void;
     resetAll: () => void;
 }
 
@@ -46,6 +68,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     agents: { ...defaultAgents },
     activeAgent: null,
     completedNodes: [],
+    logs: [],
 
     setAgentStatus: (name, updates) =>
         set((state) => ({
@@ -62,6 +85,36 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             completedNodes: [...state.completedNodes, node],
         })),
 
+    addLog: (log) =>
+        set((state) => ({
+            logs: [
+                ...state.logs,
+                {
+                    ...log,
+                    id: crypto.randomUUID(),
+                    time: new Date().toLocaleTimeString("en-US", { hour12: false }),
+                },
+            ],
+        })),
+
+    updateLastLogStatus: (agent, status) =>
+        set((state) => {
+            const index = [...state.logs].reverse().findIndex(l => l.agent === agent);
+            if (index === -1) return state;
+            const realIndex = state.logs.length - 1 - index;
+            const newLogs = [...state.logs];
+            newLogs[realIndex] = { ...newLogs[realIndex], status };
+            return { logs: newLogs };
+        }),
+
+    setAgentDrafts: (name, drafts) =>
+        set((state) => ({
+            agents: {
+                ...state.agents,
+                [name]: { ...state.agents[name], drafts },
+            },
+        })),
+
     resetAll: () =>
-        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [] }),
+        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [] }),
 }));

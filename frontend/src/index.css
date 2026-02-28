@@ -1,0 +1,168 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CareerAgent Design System — Light mode only. All colors in HSL. */
+
+@layer base {
+  :root {
+    /* Base */
+    --background: 0 0% 100%;
+    --foreground: 222 47% 7%;
+
+    /* Cards */
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 7%;
+
+    /* Popovers */
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 7%;
+
+    /* Primary = Rose Red accent */
+    --primary: 347 90% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary = light off-white */
+    --secondary: 210 20% 97%;
+    --secondary-foreground: 222 47% 7%;
+
+    /* Muted = subtle gray */
+    --muted: 210 20% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    /* Accent */
+    --accent: 347 90% 97%;
+    --accent-foreground: 347 90% 40%;
+
+    /* Destructive */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Borders & inputs */
+    --border: 214 20% 91%;
+    --input: 214 20% 91%;
+    --ring: 347 90% 45%;
+
+    --radius: 0.75rem;
+
+    /* Sidebar */
+    --sidebar-background: 210 20% 98%;
+    --sidebar-foreground: 222 47% 7%;
+    --sidebar-primary: 347 90% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 20% 95%;
+    --sidebar-accent-foreground: 222 47% 7%;
+    --sidebar-border: 214 20% 91%;
+    --sidebar-ring: 347 90% 45%;
+
+    /* Custom shadow tokens */
+    --shadow-soft: 0 2px 8px -2px rgba(0,0,0,0.06), 0 4px 20px -4px rgba(0,0,0,0.05);
+    --shadow-card: 0 1px 4px -1px rgba(0,0,0,0.04), 0 2px 12px -2px rgba(0,0,0,0.06);
+    --shadow-elevated: 0 4px 20px -2px rgba(0,0,0,0.08), 0 8px 32px -4px rgba(0,0,0,0.06);
+    --shadow-rose: 0 4px 20px -4px rgba(190, 18, 60, 0.25);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html, body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', 'Noto Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2 {
+    font-family: 'Libre Baskerville', 'Noto Serif', serif;
+  }
+
+  *:focus {
+    outline: none;
+  }
+
+  ::selection {
+    background-color: hsl(355 100% 94%);
+    color: hsl(347 90% 45%);
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(213 27% 84%);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(215 16% 47%);
+  }
+}
+
+@layer utilities {
+  @keyframes drift {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(30px, -20px); }
+  }
+
+  @keyframes drift-reverse {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(-25px, 15px); }
+  }
+
+  .font-serif {
+    font-family: 'Libre Baskerville', 'Noto Serif', serif;
+  }
+
+  .font-sans {
+    font-family: 'DM Sans', 'Noto Sans', sans-serif;
+  }
+
+  .shadow-soft {
+    box-shadow: var(--shadow-soft);
+  }
+
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+
+  .shadow-elevated {
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .shadow-rose {
+    box-shadow: var(--shadow-rose);
+  }
+
+  @keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  @keyframes shimmer-pulse {
+    0%, 100% { box-shadow: 0 4px 20px -4px rgba(190, 18, 60, 0.25); }
+    50% { box-shadow: 0 4px 28px -2px rgba(190, 18, 60, 0.45); }
+  }
+
+  @keyframes live-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.85); }
+  }
+
+  .animate-blink-cursor {
+    animation: blink-cursor 1s step-end infinite;
+  }
+
+  .animate-shimmer-pulse {
+    animation: shimmer-pulse 2s ease-in-out infinite;
+  }
+
+  .animate-live-pulse {
+    animation: live-pulse 1.8s ease-in-out infinite;
+  }
+}

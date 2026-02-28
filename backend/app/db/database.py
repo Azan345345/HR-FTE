@@ -1,17 +1,18 @@
-"""
-Digital FTE - Database Engine & Session
-"""
+"""SQLAlchemy async engine and session factory."""
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-
 from app.config import settings
 
+# Use asyncpg for PostgreSQL, aiosqlite for local dev fallback
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.APP_ENV == "development",
-    pool_size=20,
-    max_overflow=10,
+    echo=settings.DEBUG,
+    pool_pre_ping=True,
+    connect_args={
+        "prepared_statement_cache_size": 0,
+        "statement_cache_size": 0
+    }
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -22,12 +23,12 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 class Base(DeclarativeBase):
-    """Base class for all ORM models."""
+    """Declarative base for all ORM models."""
     pass
 
 
-async def get_db() -> AsyncSession:
-    """Dependency that yields an async DB session."""
+async def get_db():
+    """FastAPI dependency – yields an async DB session."""
     async with AsyncSessionLocal() as session:
         try:
             yield session

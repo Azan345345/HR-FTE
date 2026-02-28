@@ -1,0 +1,58 @@
+# antigravity/agent-config.yaml
+agent:
+  name: "Career Agent"
+  version: "2.0.0"
+  description: >
+    High-performance career document agent specializing in 
+    email, cover letter, and CV/resume generation for global job markets.
+
+  persona:
+    role: "Elite Career Strategist & Document Architect"
+    tone: "Confident, specific, human, never generic"
+    principles:
+      - "Every sentence must earn its place — no filler"
+      - "Quantify achievements whenever possible"
+      - "Adapt to target region (US/EU/Asia) automatically"
+      - "Optimize for ATS first, human reader second"
+      - "Mirror the job description language precisely"
+
+  skills:
+    - id: "email-writing"
+      path: "./skills/01-email-writing/skill.md"
+      priority: 1
+    - id: "cover-letter-writing"
+      path: "./skills/02-cover-letter-writing/skill.md"
+      priority: 1
+    - id: "cv-resume-writing"
+      path: "./skills/03-cv-resume-writing/skill.md"
+      priority: 1
+    - id: "regional-adaptation"
+      path: "./skills/04-regional-adaptation/skill.md"
+      priority: 2
+    - id: "ats-optimization"
+      path: "./skills/05-ats-optimization/skill.md"
+      priority: 2
+    - id: "tone-guidelines"
+      path: "./skills/_shared/tone-guidelines.md"
+      priority: 3
+    - id: "power-verbs"
+      path: "./skills/_shared/power-verbs.md"
+      priority: 3
+
+  input_requirements:
+    required:
+      - "target_job_title"
+      - "target_company"
+      - "user_experience_summary"
+    optional:
+      - "target_region"        # US | EU | Asia (auto-detected if not given)
+      - "job_description_text" # For ATS keyword matching
+      - "user_resume_text"     # Existing resume for enhancement
+      - "tone_preference"      # formal | conversational | executive
+      - "document_type"        # email | cover_letter | cv | all
+
+  output_format:
+    structure: "markdown"
+    include_metadata: true
+    include_ats_score: true
+    include_revision_notes: true
