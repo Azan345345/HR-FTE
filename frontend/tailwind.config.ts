@@ -20,8 +20,8 @@ export default {
       },
       boxShadow: {
         'float': '0 12px 40px -4px rgba(0,0,0,0.1)',
-        'glow-rose': '0 0 24px rgba(5,185,120,0.22)',
-        'glow-brand': '0 0 24px rgba(5,185,120,0.22)',
+        'glow-rose': '0 0 24px rgba(7,169,223,0.22)',
+        'glow-brand': '0 0 24px rgba(7,169,223,0.22)',
       },
       colors: {
         border: "hsl(var(--border))",
@@ -67,18 +67,19 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
-        /* Brand palette — hsl(159, 95%, 56%) teal-mint */
+        /* Brand palette — hsl(195°, 94%, 69%) sky-cyan
+           400 = the exact target colour the user specified */
         rose: {
-          50:  "hsl(159 95% 97%)",
-          100: "hsl(159 90% 92%)",
-          200: "hsl(159 88% 84%)",
-          300: "hsl(159 88% 72%)",
-          400: "hsl(159 90% 62%)",
-          500: "hsl(159 95% 56%)",
-          600: "hsl(159 95% 44%)",
-          700: "hsl(159 95% 36%)",
-          800: "hsl(159 90% 27%)",
-          900: "hsl(159 85% 18%)",
+          50:  "hsl(195 94% 97%)",
+          100: "hsl(195 90% 93%)",
+          200: "hsl(195 89% 85%)",
+          300: "hsl(195 89% 77%)",
+          400: "hsl(195 94% 69%)",
+          500: "hsl(195 94% 57%)",
+          600: "hsl(195 94% 45%)",
+          700: "hsl(195 94% 35%)",
+          800: "hsl(195 90% 26%)",
+          900: "hsl(195 85% 17%)",
         },
         slate: {
           50: "hsl(210 40% 98%)",

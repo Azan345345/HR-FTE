@@ -133,7 +133,7 @@ export function LeftSidebar({
       <div className="p-4 border-t border-slate-100 space-y-2 flex-shrink-0 bg-white/50">
         <button
           className="w-full h-10 bg-primary text-white rounded-xl text-xs font-bold hover:brightness-95 active:brightness-90 transition-all flex items-center justify-center gap-2 shadow-sm"
-          style={{ boxShadow: "0 2px 12px -2px hsl(159 95% 44% / 35%)" }}
+          style={{ boxShadow: "0 2px 12px -2px hsl(195 94% 45% / 35%)" }}
         >
           <Sparkles className="w-3.5 h-3.5" />
           Upgrade to Plus

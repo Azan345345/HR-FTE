@@ -219,8 +219,8 @@ const SUGGESTIONS = [
     label: "Resume",
     text: "Parse and analyze my uploaded resume",
     gradient: "from-primary to-emerald-400",
-    bg: "from-[hsl(159,95%,97%)] to-[hsl(159,90%,92%)]",
-    border: "border-[hsl(159,90%,92%)] hover:border-primary/30",
+    bg: "from-[hsl(195,94%,97%)] to-[hsl(195,90%,93%)]",
+    border: "border-[hsl(195,90%,93%)] hover:border-primary/30",
   },
   {
     icon: Mail,
@@ -470,7 +470,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           >
             {/* Brand mark */}
             <div className="relative mb-7">
-              <div className="w-20 h-20 rounded-3xl bg-primary flex items-center justify-center shadow-lg" style={{ boxShadow: "0 8px 32px -4px hsl(159 95% 44% / 40%)" }}>
+              <div className="w-20 h-20 rounded-3xl bg-primary flex items-center justify-center shadow-lg" style={{ boxShadow: "0 8px 32px -4px hsl(195 94% 45% / 40%)" }}>
                 <Bot size={34} className="text-white" />
               </div>
               <motion.div
