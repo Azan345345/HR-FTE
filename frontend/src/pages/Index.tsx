@@ -100,7 +100,7 @@ const Index = () => {
                     activeSessionId={activeSessionId}
                     onSessionCreated={setActiveSessionId}
                     onNavigateToInterview={(jobId) => {
-                      setFocusedJobId(jobId);
+                      if (jobId) setFocusedJobId(jobId);
                       setActiveView("interview_prep");
                     }}
                   />

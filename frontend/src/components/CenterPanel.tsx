@@ -243,7 +243,7 @@ const SUGGESTIONS = [
 interface CenterPanelProps {
   activeSessionId: string | null;
   onSessionCreated: (id: string) => void;
-  onNavigateToInterview?: (jobId: string) => void;
+  onNavigateToInterview?: (jobId: string | null) => void;
 }
 
 export function CenterPanel({ activeSessionId, onSessionCreated, onNavigateToInterview }: CenterPanelProps) {

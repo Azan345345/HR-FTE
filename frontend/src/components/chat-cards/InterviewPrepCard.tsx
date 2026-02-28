@@ -20,7 +20,7 @@ interface InterviewReadyMeta {
 interface Props {
   metadata: InterviewReadyMeta;
   onSendAction: (action: string) => void;
-  onNavigateToInterview?: (jobId: string) => void;
+  onNavigateToInterview?: (jobId: string | null) => void;
 }
 
 const ICON_MAP: Record<string, React.FC<any>> = {
@@ -112,10 +112,11 @@ export function InterviewPrepCard({ metadata, onSendAction, onNavigateToIntervie
           size="sm"
           className="w-full h-9 text-[12px] font-semibold bg-slate-800 hover:bg-slate-900 text-white gap-1.5 font-sans"
           onClick={() => {
-            if (onNavigateToInterview && job.id) {
-              onNavigateToInterview(job.id);
+            if (onNavigateToInterview) {
+              // Navigate to interview prep view (job.id may be null for old cards — view handles it)
+              onNavigateToInterview(job.id ?? null);
             } else {
-              // Fallback: send action if no navigation callback provided
+              // Fallback only when running outside Index context
               onSendAction(`__PREP_INTERVIEW__:${job.id || prep_id}`);
             }
           }}
