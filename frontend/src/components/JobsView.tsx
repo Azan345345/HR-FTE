@@ -254,13 +254,15 @@ export function JobsView({ onNavigateToInterview }: JobsViewProps) {
                   <Brain size={10} /> Prep
                 </button>
               )}
-              <button
-                onClick={() => startApply(job, jobId)}
-                className="h-7 px-2.5 rounded-lg bg-slate-900 text-white text-[10px] font-bold hover:bg-rose-600 transition-all flex items-center gap-1"
-              >
-                <Sparkles size={10} className="text-rose-300" />
-                Apply
-              </button>
+              {!isApplication && (
+                <button
+                  onClick={() => startApply(job, jobId)}
+                  className="h-7 px-2.5 rounded-lg bg-slate-900 text-white text-[10px] font-bold hover:bg-rose-600 transition-all flex items-center gap-1"
+                >
+                  <Sparkles size={10} className="text-rose-300" />
+                  Apply
+                </button>
+              )}
             </div>
           </div>
         </div>
