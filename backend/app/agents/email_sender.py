@@ -142,17 +142,33 @@ async def send_via_gmail(
             return {"message_id": None, "status": "failed",
                     "error": "No refresh token available. Connect Gmail in Settings."}
 
+        from google.auth.exceptions import RefreshError
+
+        # Always build Credentials without a stale access_token so the library
+        # is forced to do a clean refresh via the refresh_token.
         creds = Credentials(
-            token=access_token,
+            token=None,  # don't reuse a potentially stale access_token
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
             client_id=client_id,
             client_secret=client_secret,
         )
 
-        # Auto-refresh if expired or no access token
-        if not creds.valid:
+        # Refresh to get a fresh access token before making any API call.
+        try:
             creds.refresh(Request())
+        except RefreshError as exc:
+            err_str = str(exc)
+            logger.warning("gmail_token_refresh_failed", error=err_str)
+            if "invalid_grant" in err_str.lower() or "token has been expired" in err_str.lower():
+                return {
+                    "message_id": None,
+                    "status": "failed",
+                    "error": err_str,
+                    "error_code": "token_revoked",
+                }
+            # Other RefreshError (network, config) — surface as-is
+            return {"message_id": None, "status": "failed", "error": err_str}
 
         service = build("gmail", "v1", credentials=creds)
 
@@ -182,5 +198,15 @@ async def send_via_gmail(
         return {"message_id": result.get("id"), "status": "sent"}
 
     except Exception as e:
-        logger.error("gmail_send_error", error=str(e), exc_info=True)
-        return {"message_id": None, "status": "failed", "error": str(e)}
+        err_str = str(e)
+        # Catch any invalid_grant that slipped past the RefreshError handler
+        if "invalid_grant" in err_str.lower() or "token has been expired" in err_str.lower():
+            logger.warning("gmail_token_revoked", error=err_str)
+            return {
+                "message_id": None,
+                "status": "failed",
+                "error": err_str,
+                "error_code": "token_revoked",
+            }
+        logger.error("gmail_send_error", error=err_str, exc_info=True)
+        return {"message_id": None, "status": "failed", "error": err_str}

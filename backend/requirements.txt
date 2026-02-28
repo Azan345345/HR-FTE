@@ -73,13 +73,14 @@ requests>=2.32.3
 beautifulsoup4>=4.12.3
 
 # ============================================================
-# Database ORM (connects to Supabase PostgreSQL)
+# Database ORM (connects to Supabase PostgreSQL or SQLite)
 # ============================================================
 sqlalchemy>=2.0.36
 alembic>=1.14.1
 asyncpg>=0.30.0
 psycopg2-binary>=2.9.10
 pgvector>=0.3.6
+aiosqlite>=0.20.0
 
 # ============================================================
 # Utilities

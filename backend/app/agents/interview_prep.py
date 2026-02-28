@@ -54,11 +54,15 @@ async def _call_llm(llm, prompt: str, label: str) -> dict:
 async def generate_interview_prep(
     job_title: str, company: str, description: str, tailored_cv_data: dict = None
 ) -> dict:
-    """Generate interview prep via 3 parallel LLM calls (each ≤90s).
+    """Generate interview prep via 4 parallel LLM calls (each ≤90s).
 
-    Call 1: company research + salary + tips + study plan + questions to ask
-    Call 2: technical (10) + behavioral (8) questions
-    Call 3: situational (8) + cultural (6) + system design (4) + coding (3)
+    Call 1: company research + salary + tips + questions_to_ask + study_plan
+    Call 2: technical (10) + behavioral (8)
+    Call 3: situational (8) + cultural (6)
+    Call 4: system_design (4) + coding (3)
+
+    Splitting into 4 smaller calls prevents JSON truncation that caused
+    system_design / coding / cultural / study_plan to be missing.
     """
     from app.core.llm_router import get_llm
 
@@ -71,7 +75,7 @@ async def generate_interview_prep(
 
     desc_snippet = (description or "")[:2000]
 
-    # ── Prompt 1: Company intel + salary + study essentials ──────────────────
+    # ── Prompt 1: Company intel + salary + tips + questions + study plan ─────
     p1 = f"""You are a world-class interview coach. Generate intelligence for:
 
 ROLE: {job_title} at {company}
@@ -110,20 +114,26 @@ Return ONLY valid JSON — no markdown, no explanation:
   ],
   "questions_to_ask": [
     "smart question 1 about role clarity",
-    "question 2", "question 3", "question 4",
-    "question 5 about tech challenges",
-    "question 6", "question 7", "question 8",
-    "question 9 about growth", "question 10",
-    "question 11", "question 12 about culture"
+    "question 2 about team structure",
+    "question 3 about technical challenges",
+    "question 4 about success metrics",
+    "question 5 about tech stack or tooling",
+    "question 6 about code review process",
+    "question 7 about on-call or incident response",
+    "question 8 about career growth",
+    "question 9 about team culture",
+    "question 10 about what interviewer enjoys most",
+    "question 11 about biggest challenge next 6 months",
+    "question 12 about engineering vs product balance"
   ],
   "study_plan": {{
-    "day_1": "focus + actions",
-    "day_2": "focus + actions",
-    "day_3": "focus + actions",
-    "day_4": "focus + actions",
-    "day_5": "focus + actions",
-    "day_6": "focus + actions",
-    "day_7": "Final prep + mindset"
+    "day_1": "Company research focus and specific actions to take",
+    "day_2": "CV and STAR stories review focus and actions",
+    "day_3": "Technical skills deep-dive focus and actions",
+    "day_4": "System design practice focus and actions",
+    "day_5": "Behavioral prep and mock answers focus",
+    "day_6": "Full mock interview and iteration",
+    "day_7": "Final light review, logistics, mindset prep"
   }}
 }}"""
 
@@ -159,7 +169,7 @@ Return ONLY valid JSON:
 Generate EXACTLY 10 technical_questions (mix easy/medium/hard covering all JD areas) and EXACTLY 8 behavioral_questions (each testing a different competency).
 Return ONLY valid JSON."""
 
-    # ── Prompt 3: Situational + Cultural + System Design + Coding ────────────
+    # ── Prompt 3: Situational + Cultural ─────────────────────────────────────
     p3 = f"""You are a world-class interview coach. Generate questions for:
 
 ROLE: {job_title} at {company}
@@ -180,19 +190,32 @@ Return ONLY valid JSON:
       "what_they_want": "what {company} actually looks for",
       "sample_answer": "authentic answer aligned to {company} values"
     }}
-  ],
+  ]
+}}
+
+Generate EXACTLY 8 situational_questions and EXACTLY 6 cultural_questions.
+Return ONLY valid JSON."""
+
+    # ── Prompt 4: System Design + Coding ─────────────────────────────────────
+    p4 = f"""You are a world-class interview coach. Generate technical challenges for:
+
+ROLE: {job_title} at {company}
+JOB DESC: {desc_snippet}
+
+Return ONLY valid JSON:
+{{
   "system_design_questions": [
     {{
-      "question": "system to design (adapt complexity to seniority)",
-      "approach": "detailed answer: components, DB schema, caching, API design, scale",
-      "evaluation_criteria": "strong vs weak answer",
+      "question": "system to design relevant to the role (adapt complexity to seniority)",
+      "approach": "detailed architecture answer: components, DB schema, caching, API design, scale considerations",
+      "evaluation_criteria": "what distinguishes a strong vs weak answer",
       "common_mistakes": ["mistake 1", "mistake 2", "mistake 3"]
     }}
   ],
   "coding_challenges": [
     {{
-      "problem": "problem statement with example input/output",
-      "optimal_solution": "commented code in most relevant language",
+      "problem": "problem statement with concrete example input/output",
+      "optimal_solution": "commented code in the most relevant language for this role",
       "time_complexity": "O(...)",
       "space_complexity": "O(...)",
       "brute_force_approach": "naive solution and why it is suboptimal",
@@ -201,16 +224,17 @@ Return ONLY valid JSON:
   ]
 }}
 
-Generate EXACTLY 8 situational_questions, EXACTLY 6 cultural_questions, EXACTLY 4 system_design_questions, EXACTLY 3 coding_challenges.
+Generate EXACTLY 4 system_design_questions and EXACTLY 3 coding_challenges.
 Return ONLY valid JSON."""
 
     logger.info("interview_prep_start", job=job_title, company=company)
 
-    # ── Run all 3 in PARALLEL — total time = slowest single call, not sum ────
+    # ── Run all 4 in PARALLEL — total time = slowest single call, not sum ────
     results = await asyncio.gather(
         _call_llm(llm, p1, "p1_context"),
-        _call_llm(llm, p2, "p2_questions_ab"),
-        _call_llm(llm, p3, "p3_questions_cd"),
+        _call_llm(llm, p2, "p2_tech_behavioral"),
+        _call_llm(llm, p3, "p3_situational_cultural"),
+        _call_llm(llm, p4, "p4_sysdesign_coding"),
         return_exceptions=True,
     )
 
@@ -218,6 +242,7 @@ Return ONLY valid JSON."""
     part1 = results[0] if isinstance(results[0], dict) else {}
     part2 = results[1] if isinstance(results[1], dict) else {}
     part3 = results[2] if isinstance(results[2], dict) else {}
+    part4 = results[3] if isinstance(results[3], dict) else {}
 
     merged = {
         "company_research": part1.get("company_research") or {
@@ -287,9 +312,106 @@ Return ONLY valid JSON."""
         "technical_questions": part2.get("technical_questions") or [],
         "behavioral_questions": part2.get("behavioral_questions") or [],
         "situational_questions": part3.get("situational_questions") or [],
-        "cultural_questions": part3.get("cultural_questions") or [],
-        "system_design_questions": part3.get("system_design_questions") or [],
-        "coding_challenges": part3.get("coding_challenges") or [],
+        "cultural_questions": part3.get("cultural_questions") or [
+            {
+                "question": f"What excites you about {company}'s mission and how do you align with it?",
+                "what_they_want": "Genuine enthusiasm and research into the company's values and direction.",
+                "sample_answer": f"I've followed {company}'s journey and what stands out is the focus on impact at scale. The engineering culture of owning outcomes end-to-end resonates with how I've worked — I thrive when I can see the direct result of my work on users.",
+            },
+            {
+                "question": "Tell me about a time you disagreed with a team decision. How did you handle it?",
+                "what_they_want": "Constructive communication, respect for process, ability to advocate for ideas without creating conflict.",
+                "sample_answer": "I once disagreed with a technical approach in a code review. I wrote up a concise technical doc outlining the trade-offs, shared it async, and we discussed it in a 20-minute call. The team ultimately chose a hybrid. I've learned the best ideas win when they're communicated clearly and respectfully.",
+            },
+            {
+                "question": "How do you balance speed vs quality in your work?",
+                "what_they_want": "Pragmatic thinking — they want builders who ship, not perfectionists who block.",
+                "sample_answer": "My default is: ship a good-enough v1 with known trade-offs documented, then iterate. I use feature flags to reduce risk. I've found that shipping fast and learning from real usage beats internal debate about edge cases.",
+            },
+            {
+                "question": "Describe your ideal team environment and how you contribute to it.",
+                "what_they_want": "Cultural fit — do they collaborate, communicate, and contribute positively?",
+                "sample_answer": "I thrive in teams with high trust and low bureaucracy. I contribute by being vocal in PRs, proactively sharing context async, and making time to onboard newer teammates. I believe good culture is built daily through small acts of generosity with knowledge.",
+            },
+            {
+                "question": "How do you handle ambiguity in projects with unclear requirements?",
+                "what_they_want": "Self-direction and structured thinking under uncertainty.",
+                "sample_answer": "I start by listing assumptions and writing a one-pager on what I think we're building and why. I get early alignment with stakeholders on the key decisions, ship a low-fidelity prototype, then iterate. Ambiguity becomes a design problem once you name it.",
+            },
+            {
+                "question": "What does work-life balance look like to you, and how do you maintain it?",
+                "what_they_want": "Self-awareness and sustainability — high performers who burn out aren't assets.",
+                "sample_answer": "I have non-negotiable recovery time — exercise and offline weekends. During intense sprints I protect it even more carefully. I've found that sustainable pace produces better long-term output than heroic crunch, and I try to model that for teammates.",
+            },
+        ],
+        "system_design_questions": part4.get("system_design_questions") or [
+            {
+                "question": f"Design a notification delivery system for {company} at scale (email, push, SMS).",
+                "approach": "Components: API gateway, message queue (Kafka/SQS), per-channel workers, retry logic with exponential backoff, user preferences DB, delivery status tracking. Use idempotency keys to prevent duplicate sends. Store notification state in a separate DB with TTL. Rate-limit per user per channel.",
+                "evaluation_criteria": "Strong: Mentions queue, idempotency, retry, observability, preferences. Weak: Ignores delivery failures, no rate limiting, no deduplication.",
+                "common_mistakes": [
+                    "Synchronous delivery without queue — blocks and loses messages on failure",
+                    "No idempotency — duplicate notifications on retry",
+                    "Ignoring user unsubscribe/preference management",
+                ],
+            },
+            {
+                "question": "Design a URL shortener like bit.ly handling 100M reads/day.",
+                "approach": "Write path: generate 7-char base62 ID, store in DB (original_url, short_code, created_at, user_id). Read path: check Redis cache first (hit rate ~90%), fallback to DB. Use consistent hashing for cache nodes. Analytics: stream click events to Kafka, batch-aggregate in data warehouse. CDN for popular links.",
+                "evaluation_criteria": "Strong: Cache-first reads, hash collision handling, analytics design, expiry logic. Weak: No caching, no collision handling, single DB.",
+                "common_mistakes": [
+                    "Not handling hash collisions — two URLs could map to same short code",
+                    "Storing analytics synchronously in the hot path — adds latency",
+                    "No TTL or link expiry strategy",
+                ],
+            },
+            {
+                "question": "Design a real-time collaborative document editor (like Google Docs).",
+                "approach": "Use Operational Transformation (OT) or CRDT for conflict resolution. WebSocket connections for real-time sync. Each operation is transformed against concurrent operations before applying. Store ops log for history/undo. Persist document state snapshots periodically. Use presence awareness (cursor positions) via pub/sub.",
+                "evaluation_criteria": "Strong: Mentions OT/CRDT, conflict resolution, persistence strategy, offline support. Weak: Assumes lock-based approach, ignores concurrent edits.",
+                "common_mistakes": [
+                    "Using simple locking — kills collaboration experience",
+                    "Not handling offline edits and reconnection merge",
+                    "No operation log — can't implement undo/history",
+                ],
+            },
+            {
+                "question": "Design a rate limiter for an API gateway handling 50K RPS.",
+                "approach": "Token bucket or sliding window counter per (user_id + endpoint). Store counters in Redis with TTL. Use Lua scripts for atomic check-and-increment. Distribute across Redis cluster. Add fallback to local in-memory rate limiting if Redis is unavailable. Return 429 with Retry-After header.",
+                "evaluation_criteria": "Strong: Algorithm choice justification, Redis atomicity, distributed consistency, fallback. Weak: In-memory only (doesn't work across instances), no atomicity.",
+                "common_mistakes": [
+                    "Non-atomic read-increment-write — race condition under load",
+                    "Fixed window algorithm — allows 2x traffic at window boundary",
+                    "No graceful degradation when rate limiter itself is down",
+                ],
+            },
+        ],
+        "coding_challenges": part4.get("coding_challenges") or [
+            {
+                "problem": "Given an array of integers, return indices of the two numbers that add up to a target. Example: nums=[2,7,11,15], target=9 → [0,1]",
+                "optimal_solution": "def two_sum(nums, target):\n    seen = {}  # value -> index\n    for i, n in enumerate(nums):\n        complement = target - n\n        if complement in seen:\n            return [seen[complement], i]\n        seen[n] = i\n    return []",
+                "time_complexity": "O(n)",
+                "space_complexity": "O(n)",
+                "brute_force_approach": "Nested loops checking every pair: O(n²) time, O(1) space. Too slow for large inputs.",
+                "edge_cases": ["No solution exists", "Same element used twice", "Negative numbers", "Target is 0"],
+            },
+            {
+                "problem": "Implement a function to check if a string is a valid palindrome, ignoring non-alphanumeric characters and case. Example: 'A man, a plan, a canal: Panama' → True",
+                "optimal_solution": "def is_palindrome(s):\n    cleaned = [c.lower() for c in s if c.isalnum()]\n    return cleaned == cleaned[::-1]",
+                "time_complexity": "O(n)",
+                "space_complexity": "O(n)",
+                "brute_force_approach": "Same approach — palindrome checking is inherently O(n). Two-pointer variant uses O(1) space: left/right pointers skipping non-alphanumeric chars.",
+                "edge_cases": ["Empty string (True)", "Single character (True)", "All punctuation (True)", "Mixed case"],
+            },
+            {
+                "problem": "Given a binary tree, return its level-order traversal (BFS). Example: Tree [3,9,20,null,null,15,7] → [[3],[9,20],[15,7]]",
+                "optimal_solution": "from collections import deque\ndef level_order(root):\n    if not root: return []\n    result, queue = [], deque([root])\n    while queue:\n        level = []\n        for _ in range(len(queue)):\n            node = queue.popleft()\n            level.append(node.val)\n            if node.left: queue.append(node.left)\n            if node.right: queue.append(node.right)\n        result.append(level)\n    return result",
+                "time_complexity": "O(n)",
+                "space_complexity": "O(n) — queue holds at most one full level",
+                "brute_force_approach": "Recursive DFS with level tracking works but uses call stack (O(h) space). BFS with deque is cleaner for level-order.",
+                "edge_cases": ["Empty tree (return [])", "Single node", "Skewed tree (linear)", "Complete binary tree"],
+            },
+        ],
     }
 
     total_q = sum(len(merged.get(k, [])) for k in [

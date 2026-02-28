@@ -358,14 +358,18 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                             <div className="flex items-center gap-2">
                               <div className={`w-2 h-2 rounded-full ${source.status === "Connected" || source.status === "Active" ? "bg-green-500" : "bg-slate-300"}`} />
                               <span className="text-xs font-medium text-slate-600 font-sans">{source.status}</span>
-                              {source.name === "Gmail (OAuth2)" && source.status === "Disconnected" && (
+                              {source.name === "Gmail (OAuth2)" && (
                                 <button
                                   onClick={handleConnectGmail}
                                   disabled={connectingGmail}
-                                  className="ml-2 flex items-center gap-1 px-2.5 py-1 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-xs font-bold hover:bg-rose-100 transition-colors disabled:opacity-50"
+                                  className={`ml-2 flex items-center gap-1 px-2.5 py-1 border rounded-lg text-xs font-bold transition-colors disabled:opacity-50 ${
+                                    source.status === "Connected"
+                                      ? "bg-slate-50 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200"
+                                      : "bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100"
+                                  }`}
                                 >
                                   <Link size={11} />
-                                  {connectingGmail ? "..." : "Connect"}
+                                  {connectingGmail ? "..." : source.status === "Connected" ? "Reconnect" : "Connect"}
                                 </button>
                               )}
                             </div>

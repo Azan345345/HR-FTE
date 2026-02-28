@@ -123,6 +123,29 @@ async def get_config(
         job_count_query = select(func.count(Job.id)).select_from(Job).join(JobSearch).where(JobSearch.user_id == current_user.id)
         job_count = await db.scalar(job_count_query)
         
+        # Check Gmail connection status — DB integration takes priority over env var.
+        # If an integration record exists and is explicitly deactivated (token was revoked),
+        # treat as Disconnected even if GOOGLE_REFRESH_TOKEN is still set in .env.
+        from app.db.models import UserIntegration
+        int_res = await db.execute(
+            select(UserIntegration).where(
+                UserIntegration.user_id == current_user.id,
+                UserIntegration.service_name.in_(["google", "gmail"]),
+            )
+        )
+        google_integration = int_res.scalar_one_or_none()
+
+        if google_integration is not None:
+            # DB record exists — honour is_active flag explicitly
+            gmail_connected = bool(
+                google_integration.is_active and google_integration.refresh_token
+            )
+        else:
+            # No DB record — fall back to env / user-level token
+            gmail_connected = bool(
+                current_user.google_refresh_token or app_settings.GOOGLE_REFRESH_TOKEN
+            )
+
         return {
             "api_keys": [
                 {"label": "OpenAI API", "key": "openai", "val": mask(app_settings.OPENAI_API_KEY), "active": bool(app_settings.OPENAI_API_KEY)},
@@ -134,7 +157,7 @@ async def get_config(
             "data_sources": [
                 {"name": "Uploaded CVs", "count": cv_count, "status": "Connected" if cv_count > 0 else "Optional"},
                 {"name": "Job Database", "count": job_count, "status": "Active"},
-                {"name": "Gmail (OAuth2)", "status": "Connected" if (current_user.google_refresh_token or app_settings.GOOGLE_REFRESH_TOKEN) else "Disconnected"},
+                {"name": "Gmail (OAuth2)", "status": "Connected" if gmail_connected else "Disconnected"},
             ],
             "budget": {
                 "spent": 12.40, # Mocked for now

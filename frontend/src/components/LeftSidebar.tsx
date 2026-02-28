@@ -52,12 +52,16 @@ export function LeftSidebar({
               <button
                 key={item.id}
                 onClick={() => onViewChange(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeView === item.id
-                  ? "bg-rose-100 text-rose-600 shadow-sm"
-                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                  }`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                  activeView === item.id
+                    ? "bg-primary/10 text-primary shadow-sm"
+                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                }`}
               >
-                <item.icon size={18} className={activeView === item.id ? "text-rose-600" : "text-slate-400"} />
+                <item.icon
+                  size={18}
+                  className={activeView === item.id ? "text-primary" : "text-slate-400"}
+                />
                 {item.label}
               </button>
             ))}
@@ -72,7 +76,7 @@ export function LeftSidebar({
               </label>
               <button
                 onClick={() => onSessionChange(null)}
-                className="hover:text-rose-600 text-slate-400 transition-colors"
+                className="text-slate-400 hover:text-primary transition-colors"
                 title="New Chat"
               >
                 <MessageSquarePlus size={14} />
@@ -82,11 +86,13 @@ export function LeftSidebar({
             <div className="space-y-1">
               <button
                 onClick={() => onSessionChange(null)}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all border border-transparent ${!activeSessionId
-                  ? "bg-white text-rose-600 border-rose-100 shadow-sm"
-                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"}`}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all border border-transparent ${
+                  !activeSessionId
+                    ? "bg-white text-primary border-primary/20 shadow-sm"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                }`}
               >
-                <Plus size={14} className={!activeSessionId ? "text-rose-500" : "text-slate-400"} />
+                <Plus size={14} className={!activeSessionId ? "text-primary" : "text-slate-400"} />
                 New Conversation
               </button>
 
@@ -102,17 +108,18 @@ export function LeftSidebar({
                   <button
                     key={session.session_id}
                     onClick={() => onSessionChange(session.session_id)}
-                    className={`w-full text-left px-4 py-2.5 rounded-xl text-xs flex flex-col gap-0.5 transition-all group border border-transparent ${activeSessionId === session.session_id
-                      ? "bg-white text-slate-900 border-slate-200 shadow-sm"
-                      : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-                      }`}
+                    className={`w-full text-left px-4 py-2.5 rounded-xl text-xs flex flex-col gap-0.5 transition-all group border border-transparent ${
+                      activeSessionId === session.session_id
+                        ? "bg-white text-slate-900 border-slate-200 shadow-sm"
+                        : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                    }`}
                   >
-                    <span className={`font-bold truncate ${activeSessionId === session.session_id ? 'text-slate-900' : 'text-slate-600'}`}>
+                    <span className={`font-bold truncate ${activeSessionId === session.session_id ? "text-slate-900" : "text-slate-600"}`}>
                       {session.title}
                     </span>
                     <span className="text-[9px] text-slate-400 flex items-center gap-1">
                       <Clock size={10} />
-                      {new Date(session.updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                      {new Date(session.updated_at).toLocaleDateString([], { month: "short", day: "numeric" })}
                     </span>
                   </button>
                 ))
@@ -124,7 +131,10 @@ export function LeftSidebar({
 
       {/* Bottom Actions */}
       <div className="p-4 border-t border-slate-100 space-y-2 flex-shrink-0 bg-white/50">
-        <button className="w-full h-10 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 transition-all flex items-center justify-center gap-2 shadow-sm shadow-rose-200">
+        <button
+          className="w-full h-10 bg-primary text-white rounded-xl text-xs font-bold hover:brightness-95 active:brightness-90 transition-all flex items-center justify-center gap-2 shadow-sm"
+          style={{ boxShadow: "0 2px 12px -2px hsl(159 95% 44% / 35%)" }}
+        >
           <Sparkles className="w-3.5 h-3.5" />
           Upgrade to Plus
         </button>

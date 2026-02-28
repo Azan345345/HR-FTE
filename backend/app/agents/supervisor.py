@@ -17,8 +17,17 @@ from app.core.event_bus import event_bus
 logger = structlog.get_logger()
 
 
+def _ensure_str(value) -> str:
+    """Coerce a value to a string. Handles lists like ['Full-time'] → 'Full-time'."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) if value else ""
+    return str(value)
+
+
 async def _log_execution(
-    db: AsyncSession,
+    db: AsyncSession,  # kept for signature compat; not used — always uses fresh session
     user_id: str,
     session_id: str,
     agent_name: str,
@@ -27,20 +36,26 @@ async def _log_execution(
     execution_time_ms: int,
     error_message: str = None,
 ):
-    """Write an AgentExecution record so the Observability tab shows real logs."""
+    """Write an AgentExecution record so the Observability tab shows real logs.
+
+    Always opens its own DB session so a stale/dead connection on the request
+    session never corrupts this write or the caller's session state.
+    """
     try:
+        from app.db.database import AsyncSessionLocal
         from app.db.models import AgentExecution
-        record = AgentExecution(
-            user_id=user_id,
-            session_id=session_id,
-            agent_name=agent_name,
-            action=action,
-            status=status,
-            execution_time_ms=execution_time_ms,
-            error_message=error_message,
-        )
-        db.add(record)
-        await db.flush()
+        async with AsyncSessionLocal() as fresh_db:
+            record = AgentExecution(
+                user_id=user_id,
+                session_id=session_id,
+                agent_name=agent_name,
+                action=action,
+                status=status,
+                execution_time_ms=execution_time_ms,
+                error_message=error_message,
+            )
+            fresh_db.add(record)
+            await fresh_db.commit()
     except Exception as e:
         logger.warning("log_execution_failed", error=str(e))
 
@@ -145,6 +160,10 @@ async def process_chat_message(
             f"I ran into an issue processing your request: {str(e)}. Please try again.",
             None,
         )
+        try:
+            await db.rollback()  # clear PendingRollback state before logging
+        except Exception:
+            pass
         await _log_execution(db, user_id, session_id, "supervisor", "process_message",
                              "failed", int((time.monotonic() - _t0) * 1000), str(e))
         await event_bus.emit_agent_completed(user_id, "supervisor", result[0][:100])
@@ -267,19 +286,21 @@ Return ONLY valid JSON."""
 
     await event_bus.emit_agent_progress(user_id, "job_hunter", 1, 3, f"Searching for: {search_query}", location or "any location")
 
-    # Load user CV for scoring
+    # Load user CV for scoring — extract values now before the long external calls
     cv_result = await db.execute(
         select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
     )
     cv = cv_result.scalar_one_or_none()
+    cv_id = cv.id if cv else None
+    cv_parsed_data = cv.parsed_data if cv else None
 
-    # Search jobs
+    # Search jobs (long-running external API calls — DB connection will be refreshed after)
     jobs = await search_jobs(
         query=search_query,
         user_id=user_id,
         location=location,
         limit=limit,
-        cv_data=cv.parsed_data if cv else None,
+        cv_data=cv_parsed_data,
     )
 
     if not jobs:
@@ -323,86 +344,93 @@ Return ONLY valid JSON."""
     )
     # ─────────────────────────────────────────────────────────────────────────
 
-    # Save JobSearch record
-    job_search = JobSearch(
-        user_id=user_id,
-        cv_id=cv.id if cv else None,
-        search_query=search_query,
-        target_location=location,
-        status="completed",
-    )
-    db.add(job_search)
-    await db.flush()
-
-    # Save Job records + pre-fetched HRContact records
+    # Use a fresh DB session for writes — the original session's connection may have
+    # dropped during the long external API calls (job search + HR lookup can take 5+ min).
+    from app.db.database import AsyncSessionLocal
     from app.db.models import HRContact as _HRContact
     saved_jobs = []
-    for job_data in jobs:
-        job_record = Job(
-            search_id=job_search.id,
-            title=job_data.get("title", ""),
-            company=job_data.get("company", ""),
-            location=job_data.get("location"),
-            salary_range=job_data.get("salary_range"),
-            job_type=job_data.get("job_type"),
-            description=job_data.get("description", ""),
-            requirements=job_data.get("requirements", []),
-            application_url=job_data.get("application_url"),
-            posted_date=job_data.get("posted_date"),
-            source=job_data.get("source", "ai_generated"),
-            match_score=job_data.get("match_score"),
-            matching_skills=job_data.get("matching_skills", []),
-            missing_skills=job_data.get("missing_skills", []),
+    search_id = None
+
+    async with AsyncSessionLocal() as fresh_db:
+        # Save JobSearch record
+        job_search = JobSearch(
+            user_id=user_id,
+            cv_id=cv_id,
+            search_query=search_query,
+            target_location=location,
+            status="completed",
         )
-        db.add(job_record)
-        await db.flush()
+        fresh_db.add(job_search)
+        await fresh_db.flush()
+        search_id = job_search.id
 
-        # Persist the pre-fetched HR contact so tailor step can load it directly
-        hr_pre = job_data.get("_hr_contact")
-        if hr_pre:
-            hr_rec = _HRContact(
-                job_id=job_record.id,
-                hr_name=hr_pre.get("hr_name"),
-                hr_email=hr_pre.get("hr_email"),
-                hr_title=hr_pre.get("hr_title"),
-                hr_linkedin=hr_pre.get("hr_linkedin") or "",
-                confidence_score=hr_pre.get("confidence_score"),
-                source=hr_pre.get("source"),
-                verified=hr_pre.get("verified", False),
+        # Save Job records + pre-fetched HRContact records
+        for job_data in jobs:
+            job_record = Job(
+                search_id=job_search.id,
+                title=job_data.get("title", ""),
+                company=job_data.get("company", ""),
+                location=job_data.get("location"),
+                salary_range=job_data.get("salary_range"),
+                job_type=_ensure_str(job_data.get("job_type")),
+                description=job_data.get("description", ""),
+                requirements=job_data.get("requirements", []),
+                application_url=job_data.get("application_url"),
+                posted_date=job_data.get("posted_date"),
+                source=job_data.get("source", "ai_generated"),
+                match_score=job_data.get("match_score"),
+                matching_skills=job_data.get("matching_skills", []),
+                missing_skills=job_data.get("missing_skills", []),
             )
-            db.add(hr_rec)
-            await db.flush()
+            fresh_db.add(job_record)
+            await fresh_db.flush()
 
-        # Build why-match bullets from data
-        matching = job_data.get("matching_skills", [])
-        missing = job_data.get("missing_skills", [])
-        why_match = []
-        if matching:
-            why_match.append(f"Matched skills: {', '.join(matching[:4])}")
-        if missing:
-            why_match.append(f"Gap areas: {', '.join(missing[:2])} (learnable)")
-        if not why_match:
-            why_match = ["Good fit based on role requirements"]
+            # Persist the pre-fetched HR contact so tailor step can load it directly
+            hr_pre = job_data.get("_hr_contact")
+            if hr_pre:
+                hr_rec = _HRContact(
+                    job_id=job_record.id,
+                    hr_name=hr_pre.get("hr_name"),
+                    hr_email=hr_pre.get("hr_email"),
+                    hr_title=hr_pre.get("hr_title"),
+                    hr_linkedin=hr_pre.get("hr_linkedin") or "",
+                    confidence_score=hr_pre.get("confidence_score"),
+                    source=hr_pre.get("source"),
+                    verified=hr_pre.get("verified", False),
+                )
+                fresh_db.add(hr_rec)
+                await fresh_db.flush()
 
-        saved_jobs.append({
-            "id": job_record.id,
-            "title": job_record.title,
-            "company": job_record.company,
-            "location": job_record.location,
-            "salary_range": job_record.salary_range,
-            "job_type": job_record.job_type,
-            "match_score": job_record.match_score or 0,
-            "matching_skills": job_record.matching_skills or [],
-            "missing_skills": job_record.missing_skills or [],
-            "why_match": why_match,
-            "application_url": job_record.application_url,
-            "hr_found": bool(hr_pre),
-        })
+            # Build why-match bullets from data
+            matching = job_data.get("matching_skills", [])
+            missing = job_data.get("missing_skills", [])
+            why_match = []
+            if matching:
+                why_match.append(f"Matched skills: {', '.join(matching[:4])}")
+            if missing:
+                why_match.append(f"Gap areas: {', '.join(missing[:2])} (learnable)")
+            if not why_match:
+                why_match = ["Good fit based on role requirements"]
 
-    await db.commit()
-    await _log_execution(db, user_id, session_id, "job_hunter", f"search:{search_query}", "success",
-                         int((time.monotonic() - _t) * 1000))
-    await db.commit()
+            saved_jobs.append({
+                "id": job_record.id,
+                "title": job_record.title,
+                "company": job_record.company,
+                "location": job_record.location,
+                "salary_range": job_record.salary_range,
+                "job_type": job_record.job_type,
+                "match_score": job_record.match_score or 0,
+                "matching_skills": job_record.matching_skills or [],
+                "missing_skills": job_record.missing_skills or [],
+                "why_match": why_match,
+                "application_url": job_record.application_url,
+                "hr_found": bool(hr_pre),
+            })
+
+        await fresh_db.commit()
+        await _log_execution(fresh_db, user_id, session_id, "job_hunter", f"search:{search_query}", "success",
+                             int((time.monotonic() - _t) * 1000))
+        await fresh_db.commit()
     await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} positions with verified HR contacts")
     await event_bus.emit_workflow_update(user_id, "job_hunter", ["job_hunter", "hr_finder"], ["cv_tailor", "email_sender"])
 
@@ -415,7 +443,7 @@ Return ONLY valid JSON."""
 
     return (text, {
         "type": "job_results",
-        "search_id": job_search.id,
+        "search_id": search_id,
         "jobs": saved_jobs,
     })
 
@@ -1282,12 +1310,45 @@ async def _handle_send_email(
         sent_ok = send_result.get("status") == "sent"
         gmail_message_id = send_result.get("message_id")
         send_error = send_result.get("error", "")
+        error_code = send_result.get("error_code", "")
+
         if not sent_ok:
-            logger.warning("gmail_send_failed", error=send_error, app_id=app_id)
+            logger.warning("gmail_send_failed", error=send_error, error_code=error_code, app_id=app_id)
+
         await _log_execution(db, user_id, app_id, "email_sender", f"send_email:{hr_email}",
                              "success" if sent_ok else "failed",
                              int((time.monotonic() - _t_send) * 1000),
                              send_error or None)
+
+        # ── Token revoked / invalid_grant — clear stale token and tell user ──
+        if not sent_ok and error_code == "token_revoked":
+            # Deactivate the stored integration so subsequent requests don't retry
+            if integration:
+                integration.is_active = False
+                integration.access_token = None
+                integration.refresh_token = None
+            # Also wipe the user-level refresh token
+            from app.db.models import User as _User
+            _user_res = await db.execute(select(_User).where(_User.id == user_id))
+            _user = _user_res.scalar_one_or_none()
+            if _user:
+                _user.google_refresh_token = None
+                _user.google_oauth_token = None
+            application.status = "send_failed"
+            await db.commit()
+            return (
+                "**Gmail authorization has expired or been revoked.**\n\n"
+                "Your Google refresh token is no longer valid. To fix this:\n\n"
+                "1. Go to **Settings → Data Sources**\n"
+                "2. Click **Reconnect Gmail** and authorize access again\n"
+                "3. Come back here and click **Send Email** to retry\n\n"
+                "**Common causes:**\n"
+                "- Google password was changed\n"
+                "- App access was revoked from [myaccount.google.com/permissions](https://myaccount.google.com/permissions)\n"
+                "- OAuth consent screen is in **Testing** mode (tokens expire after 7 days) — "
+                "publish it in [Google Cloud Console](https://console.cloud.google.com/apis/credentials/consent) to fix this permanently",
+                None,
+            )
     else:
         # No credentials at all — mock send
         is_mock = True

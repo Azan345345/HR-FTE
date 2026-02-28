@@ -285,7 +285,7 @@ function GeneratingState({ jobTitle, company }: { jobTitle: string; company: str
                     {steps[step]}
                 </motion.div>
             </AnimatePresence>
-            <p className="text-[10px] text-slate-300 mt-6">Usually takes 1–3 minutes · 3 AI calls running</p>
+            <p className="text-[10px] text-slate-300 mt-6">Usually takes 1–3 minutes · 4 AI calls running in parallel</p>
         </div>
     );
 }
@@ -455,25 +455,28 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
     const [diffFilter, setDiffFilter]       = useState<string>("all");
     const [chatOpen, setChatOpen]           = useState(false);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    // Ref so handleSelectJob always sees current preps without needing it as dep
+    const prepsRef = useRef<any[]>([]);
 
-    // ── Data loading ─────────────────────────────────────────────────────────
+    // ── Data loading — incremental so jobs appear fast ────────────────────────
     useEffect(() => {
-        const fetch = async () => {
-            try {
-                const [jd, ad, pd] = await Promise.all([
-                    listJobs(undefined, 100, 0).catch(() => ({ jobs: [] })),
-                    listApplications().catch(() => ({ applications: [] })),
-                    listInterviewPreps().catch(() => ({ preps: [] })),
-                ]);
-                setJobs((jd as any).jobs || []);
-                setApplications((ad as any).applications || []);
-                setPreps((pd as any).preps || []);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetch();
+        // Kick all 3 off in parallel; update UI as each completes
+        listJobs(undefined, 50, 0)
+            .then(jd => setJobs((jd as any).jobs || []))
+            .catch(() => {})
+            .finally(() => setLoading(false)); // show sidebar as soon as jobs land
+
+        listApplications()
+            .then(ad => setApplications((ad as any).applications || []))
+            .catch(() => {});
+
+        listInterviewPreps()
+            .then(pd => setPreps((pd as any).preps || []))
+            .catch(() => {});
     }, []);
+
+    // Keep prepsRef in sync
+    useEffect(() => { prepsRef.current = preps; }, [preps]);
 
     // ── Refresh preps list ───────────────────────────────────────────────────
     const refreshPreps = useCallback(async () => {
@@ -545,25 +548,37 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
         return () => { if (pollRef.current) clearInterval(pollRef.current); };
     }, [activePrep?.id, activePrep?.status, refreshPreps]);
 
+    // Stable callback — reads preps via ref so it never gets a new identity
+    // when preps updates (which was causing the focusedJobId effect to re-fire
+    // and reset activeTab to "overview" on every poll/refresh cycle).
     const handleSelectJob = useCallback((jobId: string) => {
-        setSelectedJobId(jobId);
-        setGenError(null);
-        setDiffFilter("all");
-        setChatOpen(false);
-        const existing = preps.find(p => p.job_id === jobId);
-        if (existing) {
-            setActivePrep(existing);
-            setGenerating(existing.status === "generating");
+        setSelectedJobId(prev => {
+            // Only reset tab / prep state when actually switching to a NEW job
+            if (prev === jobId) return prev;
+            setGenError(null);
+            setDiffFilter("all");
+            setChatOpen(false);
+            const existing = prepsRef.current.find(p => p.job_id === jobId);
+            if (existing) {
+                setActivePrep(existing);
+                setGenerating(existing.status === "generating");
+            } else {
+                setActivePrep(null);
+                setGenerating(false);
+            }
             setActiveTab("overview");
-        } else {
-            setActivePrep(null);
-            setGenerating(false);
-        }
-        setSidebarOpen(false);
-    }, [preps]);
+            setSidebarOpen(false);
+            return jobId;
+        });
+    }, []); // no deps — uses prepsRef
 
+    // Only fire when focusedJobId actually changes, not when handleSelectJob changes
+    const prevFocusedRef = useRef<string | null>(null);
     useEffect(() => {
-        if (focusedJobId) handleSelectJob(focusedJobId);
+        if (focusedJobId && focusedJobId !== prevFocusedRef.current) {
+            prevFocusedRef.current = focusedJobId;
+            handleSelectJob(focusedJobId);
+        }
     }, [focusedJobId, handleSelectJob]);
 
     const handleGenerate = async () => {

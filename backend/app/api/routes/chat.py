@@ -26,10 +26,11 @@ async def send_message(
 ):
     """Send a chat message and get AI response."""
     session_id = body.session_id or str(uuid.uuid4())
+    user_id = str(current_user.id)  # capture as plain str before any long agent calls
 
     # Save user message
     user_msg = ChatMessage(
-        user_id=current_user.id,
+        user_id=user_id,
         session_id=session_id,
         role="user",
         content=body.message,
@@ -43,7 +44,7 @@ async def send_message(
     try:
         from app.agents.supervisor import process_chat_message
         result = await process_chat_message(
-            user_id=current_user.id,
+            user_id=user_id,
             session_id=session_id,
             message=body.message,
             db=db,
@@ -56,9 +57,16 @@ async def send_message(
     except Exception as e:
         response_text = f"I'm sorry, I encountered an error: {str(e)}. Please try again."
 
+    # The agent may have held db open for minutes — rollback any stale state
+    # so the session is clean before we write the assistant message.
+    try:
+        await db.rollback()
+    except Exception:
+        pass
+
     # Save assistant response with metadata
     assistant_msg = ChatMessage(
-        user_id=current_user.id,
+        user_id=user_id,
         session_id=session_id,
         role="assistant",
         agent_name="supervisor",

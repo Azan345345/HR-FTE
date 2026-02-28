@@ -9,6 +9,7 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     pool_pre_ping=True,
+    pool_recycle=300,  # recycle connections every 5 min — prevents Supabase idle drops
     connect_args={
         "prepared_statement_cache_size": 0,
         "statement_cache_size": 0

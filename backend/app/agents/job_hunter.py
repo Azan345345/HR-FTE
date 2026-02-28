@@ -99,25 +99,49 @@ Return ONLY JSON."""
         country_code = (parsed.get("country_code") or "us").lower()
         country_name = parsed.get("country")
 
-        # Quick city → country code mapping
-        if search_location and not country_name:
+        # Quick city/country → ISO code mapping (supplements LLM extraction)
+        if search_location:
             loc = search_location.lower()
-            if any(k in loc for k in ("london", " uk", "england", "britain")):
+            if any(k in loc for k in ("london", " uk", "england", "britain", "scotland", "wales")):
                 country_code = "gb"
             elif any(k in loc for k in ("sydney", "melbourne", "brisbane", "australia")):
                 country_code = "au"
             elif "paris" in loc or "france" in loc:
                 country_code = "fr"
-            elif "berlin" in loc or "germany" in loc:
+            elif "berlin" in loc or "germany" in loc or "munich" in loc or "frankfurt" in loc:
                 country_code = "de"
-            elif "toronto" in loc or "canada" in loc:
+            elif "toronto" in loc or "vancouver" in loc or "canada" in loc:
                 country_code = "ca"
-            elif any(k in loc for k in ("india", "delhi", "bangalore", "mumbai")):
+            elif any(k in loc for k in ("india", "delhi", "bangalore", "mumbai", "hyderabad")):
                 country_code = "in"
-            elif any(k in loc for k in ("dubai", "uae", "emirates")):
+            elif any(k in loc for k in ("dubai", "uae", "emirates", "abu dhabi")):
                 country_code = "ae"
             elif any(k in loc for k in ("karachi", "lahore", "islamabad", "pakistan")):
                 country_code = "pk"
+            elif any(k in loc for k in ("finland", "helsinki", "tampere", "espoo")):
+                country_code = "fi"
+            elif any(k in loc for k in ("norway", "oslo", "bergen", "trondheim")):
+                country_code = "no"
+            elif any(k in loc for k in ("sweden", "stockholm", "gothenburg", "malmö", "malmo")):
+                country_code = "se"
+            elif any(k in loc for k in ("denmark", "copenhagen", "aarhus")):
+                country_code = "dk"
+            elif any(k in loc for k in ("netherlands", "amsterdam", "rotterdam", "hague")):
+                country_code = "nl"
+            elif any(k in loc for k in ("amsterdam", "netherlands")):
+                country_code = "nl"
+            elif any(k in loc for k in ("switzerland", "zurich", "geneva", "bern")):
+                country_code = "ch"
+            elif any(k in loc for k in ("austria", "vienna", "graz")):
+                country_code = "at"
+            elif any(k in loc for k in ("singapore")):
+                country_code = "sg"
+            elif any(k in loc for k in ("poland", "warsaw", "krakow")):
+                country_code = "pl"
+            elif any(k in loc for k in ("spain", "madrid", "barcelona")):
+                country_code = "es"
+            elif any(k in loc for k in ("italy", "rome", "milan")):
+                country_code = "it"
     except Exception:
         search_title = query
         search_location = location
@@ -127,18 +151,33 @@ Return ONLY JSON."""
     all_jobs: list[dict] = []
     sources_tried: list[str] = []
 
-    # 2. Apify LinkedIn (highest quality — real listings)
+    # 2. Apify Indeed (real listings — broad international coverage)
+    if settings.APIFY_API_KEY:
+        try:
+            await event_bus.emit_agent_progress(
+                user_id, "job_hunter", 1, 4, "Searching Indeed via Apify"
+            )
+            apify_jobs = await _search_apify_indeed(
+                search_title, search_location, limit, country_code
+            )
+            all_jobs.extend(apify_jobs)
+            sources_tried.append("indeed")
+            logger.info("apify_indeed_results", count=len(apify_jobs))
+        except Exception as e:
+            logger.warning("apify_indeed_failed", error=str(e))
+
+    # 2b. Apify LinkedIn (secondary source)
     if settings.APIFY_API_KEY:
         try:
             await event_bus.emit_agent_progress(
                 user_id, "job_hunter", 1, 4, "Searching LinkedIn via Apify"
             )
-            apify_jobs = await _search_apify_linkedin(
+            linkedin_jobs = await _search_apify_linkedin(
                 search_title, search_location, limit, country_code
             )
-            all_jobs.extend(apify_jobs)
+            all_jobs.extend(linkedin_jobs)
             sources_tried.append("linkedin")
-            logger.info("apify_linkedin_results", count=len(apify_jobs))
+            logger.info("apify_linkedin_results", count=len(linkedin_jobs))
         except Exception as e:
             logger.warning("apify_linkedin_failed", error=str(e))
 
@@ -173,15 +212,7 @@ Return ONLY JSON."""
         except Exception as e:
             logger.warning("jsearch_failed", error=str(e))
 
-    # 5. LLM fallback if no real APIs returned anything
-    if not all_jobs:
-        await event_bus.emit_agent_progress(
-            user_id, "job_hunter", 3, 4, "Generating AI sample jobs (no API keys active)"
-        )
-        all_jobs = await _generate_sample_jobs(query, location, limit)
-        sources_tried.append("ai_generated")
-
-    # 6. Cross-platform deduplication (fuzzy company+title match)
+    # 5. Cross-platform deduplication (fuzzy company+title match)
     await event_bus.emit_agent_progress(
         user_id, "job_hunter", 4, 4,
         f"Deduplicating {len(all_jobs)} listings from {len(sources_tried)} sources"
@@ -216,54 +247,157 @@ def _deduplicate(jobs: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
-# ── Apify LinkedIn Job Search ─────────────────────────────────────────────────
+# ── Apify Indeed Job Search ───────────────────────────────────────────────────
 
-async def _search_apify_linkedin(
+async def _search_apify_indeed(
     query: str, location: Optional[str], limit: int, country_code: str = "us"
 ) -> list[dict]:
-    """Search LinkedIn jobs via Apify's linkedin-jobs-search actor (sync run)."""
+    """Search Indeed jobs via Apify's official indeed-scraper actor."""
     import httpx
 
-    actor_id = "curious_coder~linkedin-jobs-search"
+    # Country code mapping: ISO 2-letter → Indeed country code (uppercase)
+    indeed_country = country_code.upper() if country_code else "US"
+
     url = (
-        f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-        f"?token={settings.APIFY_API_KEY}&timeout=60&memory=512"
+        f"https://api.apify.com/v2/acts/misceres~indeed-scraper/run-sync-get-dataset-items"
+        f"?token={settings.APIFY_API_KEY}&timeout=120&memory=1024"
     )
 
     payload = {
-        "title": query,
+        "position": query,
+        "country": indeed_country,
         "location": location or "",
-        "rows": min(limit * 2, 25),  # fetch extra so dedup still hits the limit
-        "proxy": {"useApifyProxy": True},
+        "maxItems": min(limit * 2, 20),
+        "parseCompanyDetails": False,
+        "saveOnlyUniqueItems": True,
+        "followApplyRedirects": False,
     }
 
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=150) as client:
         response = await client.post(url, json=payload)
         response.raise_for_status()
         items = response.json()
 
     jobs = []
     for item in items:
-        # Apify linkedin-jobs-search typical fields
-        title = item.get("title") or item.get("job_title") or ""
-        company = item.get("company") or item.get("companyName") or ""
+        title = item.get("positionName") or item.get("title") or ""
+        company = item.get("company") or ""
         if not title or not company:
             continue
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": item.get("location") or "",
+            "description": item.get("description") or item.get("jobDescription") or "",
+            "source": "indeed",
+            "application_url": item.get("externalApplyLink") or item.get("url") or "",
+            "posted_date": item.get("postedAt") or item.get("postedTime") or "",
+            "salary_range": item.get("salary") or "",
+            "job_type": _ensure_str(item.get("jobType")),
+            "requirements": _extract_requirements(
+                item.get("description") or item.get("jobDescription") or ""
+            ),
+            "matching_skills": [],
+            "missing_skills": [],
+            "company_domain": _guess_domain(company),
+        })
+    return jobs[:limit]
+
+
+# ── Apify LinkedIn Job Search ─────────────────────────────────────────────────
+
+async def _search_apify_linkedin(
+    query: str, location: Optional[str], limit: int, country_code: str = "us"
+) -> list[dict]:
+    """Search LinkedIn jobs via fantastic-jobs/advanced-linkedin-job-search-api actor.
+
+    Input schema:
+      titleSearch    – array of title keywords (AND-matched within each item)
+      locationSearch – array of location strings in 'City, Region, Country' format
+      count          – max jobs to return (up to 5000)
+    """
+    import httpx
+
+    # Build location strings: actor requires full English names, no abbreviations
+    location_terms: list[str] = []
+    if location:
+        location_terms.append(location)
+
+    url = (
+        "https://api.apify.com/v2/acts/fantastic-jobs~advanced-linkedin-job-search-api"
+        f"/run-sync-get-dataset-items?token={settings.APIFY_API_KEY}&timeout=120&memory=1024"
+    )
+
+    payload: dict = {
+        "titleSearch": [query],
+        "count": min(limit * 2, 50),
+    }
+    if location_terms:
+        payload["locationSearch"] = location_terms
+
+    async with httpx.AsyncClient(timeout=150) as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        items = response.json()
+
+    jobs = []
+    for item in items:
+        # Actor returns nested job/company objects; handle both flat and nested
+        job_obj = item.get("job") or item
+        company_obj = item.get("company") or item
+
+        title = (
+            job_obj.get("title") or job_obj.get("positionName") or
+            item.get("title") or item.get("jobTitle") or ""
+        )
+        company = (
+            company_obj.get("name") or company_obj.get("companyName") or
+            item.get("companyName") or item.get("company") or ""
+        )
+        if not title or not company:
+            continue
+
+        description = (
+            job_obj.get("description") or job_obj.get("descriptionText") or
+            item.get("description") or item.get("jobDescription") or ""
+        )
+        location_val = (
+            job_obj.get("location") or job_obj.get("jobLocation") or
+            item.get("location") or item.get("jobLocation") or ""
+        )
+        apply_url = (
+            job_obj.get("applyUrl") or job_obj.get("url") or job_obj.get("jobUrl") or
+            item.get("applyUrl") or item.get("url") or item.get("jobUrl") or ""
+        )
+        linkedin_url = (
+            job_obj.get("linkedinUrl") or job_obj.get("url") or
+            item.get("linkedinUrl") or item.get("url") or ""
+        )
+        posted = (
+            job_obj.get("postedAt") or job_obj.get("publishedAt") or
+            item.get("postedAt") or item.get("publishedAt") or item.get("postedDate") or ""
+        )
+        salary = (
+            job_obj.get("salary") or job_obj.get("salaryRange") or
+            item.get("salary") or item.get("salaryRange") or ""
+        )
+        job_type = _ensure_str(
+            job_obj.get("employmentType") or job_obj.get("workType") or
+            item.get("employmentType") or item.get("jobType")
+        )
 
         jobs.append({
             "title": title,
             "company": company,
-            "location": item.get("location") or item.get("jobLocation") or "",
-            "description": item.get("description") or item.get("jobDescription") or "",
+            "location": location_val,
+            "description": description,
             "source": "linkedin",
-            "application_url": item.get("url") or item.get("applyUrl") or item.get("jobUrl") or "",
-            "linkedin_url": item.get("url") or item.get("jobUrl") or "",
-            "posted_date": item.get("postedDate") or item.get("publishedAt") or "",
-            "salary_range": item.get("salary") or item.get("salaryRange") or "",
-            "job_type": item.get("employmentType") or item.get("jobType") or "",
-            "requirements": _extract_requirements(
-                item.get("description") or item.get("jobDescription") or ""
-            ),
+            "application_url": apply_url,
+            "linkedin_url": linkedin_url,
+            "posted_date": posted,
+            "salary_range": salary,
+            "job_type": job_type,
+            "requirements": _extract_requirements(description),
             "matching_skills": [],
             "missing_skills": [],
             "company_domain": _guess_domain(company),
@@ -284,6 +418,15 @@ def _extract_requirements(description: str) -> list[str]:
     return reqs[:8]
 
 
+def _ensure_str(value) -> str:
+    """Coerce a value to a string. Handles lists like ['Full-time'] → 'Full-time'."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) if value else ""
+    return str(value)
+
+
 def _guess_domain(company: str) -> str:
     """Best-effort company domain guess for Hunter.io lookup."""
     clean = re.sub(r"[^a-z0-9]", "", company.lower())
@@ -297,19 +440,24 @@ async def _search_serpapi(
 ) -> list[dict]:
     from serpapi import GoogleSearch
 
-    domains = {"au": "google.com.au", "gb": "google.co.uk", "ca": "google.ca",
-               "in": "google.co.in", "us": "google.com"}
+    domains = {
+        "au": "google.com.au", "gb": "google.co.uk", "ca": "google.ca",
+        "in": "google.co.in", "us": "google.com", "de": "google.de",
+        "fr": "google.fr", "nl": "google.nl", "se": "google.se",
+        "no": "google.no", "fi": "google.fi", "dk": "google.dk",
+        "ch": "google.ch", "at": "google.at", "es": "google.es",
+        "it": "google.it", "pl": "google.pl", "sg": "google.com.sg",
+    }
+    search_q = f"{query} {location}".strip() if location else query
     params = {
         "engine": "google_jobs",
-        "q": query,
+        "q": search_q,
         "api_key": settings.SERPAPI_API_KEY,
         "num": limit,
         "gl": country_code,
         "hl": "en",
         "google_domain": domains.get(country_code, "google.com"),
     }
-    if location:
-        params["location"] = location
 
     search = GoogleSearch(params)
     results = search.get_dict()
@@ -326,7 +474,7 @@ async def _search_serpapi(
             "application_url": item.get("apply_link") or item.get("link") or "",
             "posted_date": item.get("detected_extensions", {}).get("posted_at", ""),
             "salary_range": item.get("detected_extensions", {}).get("salary", ""),
-            "job_type": item.get("detected_extensions", {}).get("schedule_type", ""),
+            "job_type": _ensure_str(item.get("detected_extensions", {}).get("schedule_type")),
             "requirements": [],
             "matching_skills": [],
             "missing_skills": [],
@@ -371,7 +519,7 @@ async def _search_jsearch(
             "application_url": item.get("job_apply_link", ""),
             "posted_date": item.get("job_posted_at_datetime_utc", ""),
             "salary_range": _format_salary(item),
-            "job_type": item.get("job_employment_type", ""),
+            "job_type": _ensure_str(item.get("job_employment_type")),
             "requirements": item.get("job_required_skills") or [],
             "matching_skills": [],
             "missing_skills": [],

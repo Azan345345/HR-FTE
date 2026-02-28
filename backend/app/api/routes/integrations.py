@@ -58,6 +58,7 @@ async def google_oauth_callback(
         integration.access_token = tokens.get("access_token")
         integration.refresh_token = tokens.get("refresh_token")
         integration.is_active = True
+        integration.token_expiry = None  # reset; will be managed by the OAuth library
     else:
         integration = UserIntegration(
             user_id=current_user.id,
@@ -65,6 +66,7 @@ async def google_oauth_callback(
             access_token=tokens.get("access_token"),
             refresh_token=tokens.get("refresh_token"),
             scopes=GOOGLE_SCOPES,
+            is_active=True,
         )
         db.add(integration)
 
@@ -106,3 +108,27 @@ async def get_integration_status(
         services["google_gmail"] = True
 
     return {"integrations": services}
+
+
+@router.delete("/google")
+async def disconnect_google(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Revoke and clear stored Google OAuth tokens so the user can reconnect."""
+    result = await db.execute(
+        select(UserIntegration).where(
+            UserIntegration.user_id == current_user.id,
+            UserIntegration.service_name.in_(["google", "gmail"]),
+        )
+    )
+    for integration in result.scalars().all():
+        integration.is_active = False
+        integration.access_token = None
+        integration.refresh_token = None
+
+    current_user.google_refresh_token = None
+    current_user.google_oauth_token = None
+
+    await db.commit()
+    return {"status": "disconnected"}

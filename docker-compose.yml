@@ -1,0 +1,64 @@
+# ============================================================
+# Digital FTE — Docker Compose
+# Runs: Backend (FastAPI :8080) + Frontend (Vite :5173)
+#
+# Usage:
+#   docker compose up --build        # first run
+#   docker compose up                # subsequent runs
+#   docker compose down              # stop
+#   docker compose logs -f backend   # stream backend logs
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # Backend — FastAPI + LangGraph + SQLite (dev) or Supabase
+  # ----------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: digital-fte-backend
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Persist uploaded CVs and generated PDFs across restarts
+      - backend_uploads:/app/uploads
+      - backend_generated:/app/generated
+      # SQLite database file (dev only — remove if using Supabase)
+      - backend_db:/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s   # sentence-transformers takes a while to load
+
+  # ----------------------------------------------------------
+  # Frontend — Vite dev server
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: digital-fte-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      # Point Vite proxy to the backend service (Docker internal DNS)
+      - VITE_BACKEND_URL=http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ----------------------------------------------------------
+# Named volumes — data persists between `docker compose down`
+# ----------------------------------------------------------
+volumes:
+  backend_uploads:
+  backend_generated:
+  backend_db:

@@ -486,16 +486,20 @@ async def _search_hunter_io(domain: str, api_key: str) -> Optional[dict]:
     return None
 
 
-# ── Strategy 6: Snov.io domain search ────────────────────────────────────────
+# ── Strategy 6: Snov.io domain search (v2 API) ────────────────────────────────
 
 async def _search_snov_io(domain: str, client_id: str, client_secret: str) -> Optional[dict]:
-    """Search Snov.io for company HR contacts. Free: 50 searches/month.
-    Get credentials: https://snov.io → Settings → API
+    """Search Snov.io for company HR contacts using the v2 async API.
+    Free: 50 searches/month. Get credentials: https://snov.io → Settings → API
+
+    v2 workflow:
+      POST /v2/domain-search/domain-emails/start?domain={domain}  → task_hash
+      GET  /v2/domain-search/domain-emails/result/{task_hash}     → poll until completed
     """
     import httpx
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        # Step 1: Get OAuth access token
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Step 1: Get OAuth access token (still v1)
         token_resp = await client.post(
             "https://api.snov.io/v1/oauth/access_token",
             data={
@@ -509,42 +513,63 @@ async def _search_snov_io(domain: str, client_id: str, client_secret: str) -> Op
         if not access_token:
             raise Exception("Snov.io: no access token returned")
 
-        # Step 2: Domain email search
-        search_resp = await client.post(
-            "https://api.snov.io/v1/get-domain-emails-with-info",
-            data={
-                "access_token": access_token,
-                "domain": domain,
-                "type": "all",
-                "limit": 10,
-            },
-        )
-        search_resp.raise_for_status()
-        data = search_resp.json()
+        headers = {"Authorization": f"Bearer {access_token}"}
 
-    emails = data.get("emails") or []
-    if not emails:
+        # Step 2: Start async domain email search (v2)
+        start_resp = await client.post(
+            "https://api.snov.io/v2/domain-search/domain-emails/start",
+            params={"domain": domain},
+            headers=headers,
+        )
+        start_resp.raise_for_status()
+        start_data = start_resp.json()
+        task_hash = start_data.get("task_hash")
+        if not task_hash:
+            raise Exception(f"Snov.io v2: no task_hash in response: {start_data}")
+
+        # Step 3: Poll until completed (max 10 attempts × 2 s = 20 s)
+        data: dict = {}
+        for _ in range(10):
+            await asyncio.sleep(2)
+            result_resp = await client.get(
+                f"https://api.snov.io/v2/domain-search/domain-emails/result/{task_hash}",
+                headers=headers,
+            )
+            result_resp.raise_for_status()
+            data = result_resp.json()
+            if data.get("status") == "completed":
+                break
+
+    raw_emails = data.get("emails") or []
+    if not raw_emails:
         return None
 
-    def hr_score(e: dict) -> int:
-        job = (e.get("currentJob") or [{}])[0]
-        combined = f"{job.get('position', '')} {job.get('companyName', '')}".lower()
-        return sum(2 for kw in _HR_KEYWORDS if kw in combined)
+    # v2 may return plain strings or dicts; normalise both
+    normalised: list[dict] = []
+    for entry in raw_emails:
+        if isinstance(entry, str):
+            normalised.append({"email": entry})
+        elif isinstance(entry, dict):
+            normalised.append(entry)
 
-    best = sorted(emails, key=hr_score, reverse=True)
+    def hr_score(e: dict) -> int:
+        position = (e.get("position") or e.get("title") or "").lower()
+        return sum(2 for kw in _HR_KEYWORDS if kw in position)
+
+    best = sorted(normalised, key=hr_score, reverse=True)
     for e in best:
-        email = e.get("email")
+        email = e.get("email") or e.get("value") or ""
         if not email or "@" not in email:
             continue
-        job = (e.get("currentJob") or [{}])[0]
         return {
-            "hr_name": f"{e.get('firstName', '')} {e.get('lastName', '')}".strip() or "HR Team",
+            "hr_name": f"{e.get('firstName', '') or e.get('first_name', '')} "
+                       f"{e.get('lastName', '') or e.get('last_name', '')}".strip() or "HR Team",
             "hr_email": email,
-            "hr_title": job.get("position") or "HR",
+            "hr_title": e.get("position") or e.get("title") or "HR",
             "hr_linkedin": "",
             "confidence_score": 0.70,
             "source": "snov.io",
-            "verified": False,
+            "verified": e.get("status") == "verified",
         }
     return None
 

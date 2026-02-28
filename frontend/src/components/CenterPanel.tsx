@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Paperclip, ArrowUp, Mic, Copy, ThumbsUp, ThumbsDown, RefreshCw,
-  Pencil, Loader2, Sparkles, Search, FileText, Mail,
+  Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
+  Pencil, Sparkles, Search, FileText, Mail, Zap, Bot,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -24,24 +24,25 @@ interface ChatMessage {
 
 function AgentAvatar() {
   return (
-    <div className="w-7 h-7 rounded-full bg-rose-100 flex items-center justify-center flex-shrink-0">
-      <span className="text-[10px] font-bold text-primary font-sans">CA</span>
+    <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center flex-shrink-0 shadow-sm">
+      <Bot size={14} className="text-white" />
     </div>
   );
 }
 
 function AgentLabel({ time }: { time: string }) {
   return (
-    <div className="flex items-center gap-2 mb-1.5 opacity-40 group-hover:opacity-100 transition-opacity duration-200">
+    <div className="flex items-center gap-2 mb-2 opacity-50 group-hover:opacity-100 transition-opacity duration-200">
       <AgentAvatar />
-      <span className="text-[11px] text-primary font-sans">CareerAgent · {time}</span>
+      <span className="text-[11px] font-semibold text-primary tracking-wide">CareerAgent</span>
+      <span className="text-[10px] text-slate-400">· {time}</span>
     </div>
   );
 }
 
 function UserLabel({ time }: { time: string }) {
   return (
-    <p className="text-[11px] text-slate-400 font-sans text-right mb-1.5 opacity-40 group-hover:opacity-100 transition-opacity duration-200">
+    <p className="text-[11px] text-slate-400 font-sans text-right mb-2 opacity-50 group-hover:opacity-100 transition-opacity duration-200">
       You · {time}
     </p>
   );
@@ -66,29 +67,32 @@ function UserBubble({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className="ml-auto max-w-[65%] group relative"
+      initial={{ opacity: 0, x: 16, y: 8 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+      className="ml-auto max-w-[62%] group relative"
     >
       <UserLabel time={time} />
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl rounded-br-sm px-5 py-4 shadow-sm relative">
-        <p className="text-[15px] text-slate-900 font-sans leading-relaxed">{children}</p>
-        <div className="absolute -top-3 right-0 opacity-0 group-hover:opacity-100 transition-all duration-200 flex gap-1 bg-white border border-slate-100 shadow-sm rounded-lg p-1">
+      <div className="relative">
+        <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-2xl rounded-tr-sm px-5 py-3.5 shadow-md">
+          <p className="text-[14px] text-white font-sans leading-relaxed">{children}</p>
+        </div>
+        {/* Hover actions */}
+        <div className="absolute -top-3 right-0 opacity-0 group-hover:opacity-100 transition-all duration-150 flex gap-0.5 bg-white border border-slate-100 shadow-md rounded-xl p-1 z-10">
           <button
             onClick={handleCopy}
-            className="p-1 hover:bg-slate-50 rounded transition-colors"
-            title={copied ? "Copied!" : "Copy message"}
+            className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors"
+            title={copied ? "Copied!" : "Copy"}
           >
-            <Copy size={12} className={copied ? "text-emerald-500" : "text-slate-400 hover:text-slate-600"} />
+            <Copy size={11} className={copied ? "text-primary" : "text-slate-400"} />
           </button>
           {onEdit && (
             <button
               onClick={() => onEdit(content)}
-              className="p-1 hover:bg-slate-50 rounded text-slate-400 hover:text-slate-600 transition-colors"
+              className="p-1.5 hover:bg-slate-50 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
               title="Edit & Resend"
             >
-              <Pencil size={12} />
+              <Pencil size={11} />
             </button>
           )}
         </div>
@@ -118,45 +122,52 @@ function AgentBubble({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className="max-w-[80%] group relative"
+      initial={{ opacity: 0, x: -16, y: 8 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+      className="max-w-[78%] group relative"
     >
       <AgentLabel time={time} />
-      <div className="bg-white border border-slate-100 border-l-[3px] border-l-rose-300 rounded-tr-2xl rounded-br-2xl rounded-bl-2xl rounded-tl-sm px-5 py-4 shadow-md relative">
-        {children}
-        <div className="absolute -top-3 right-0 opacity-0 group-hover:opacity-100 transition-all duration-200 flex gap-1 bg-white border border-slate-100 shadow-sm rounded-lg p-1">
+      <div className="relative">
+        <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-5 py-4 shadow-sm relative overflow-hidden">
+          {/* Subtle left accent stripe */}
+          <div className="absolute left-0 top-3 bottom-3 w-0.5 bg-primary rounded-full" />
+          <div className="pl-3">
+            {children}
+          </div>
+        </div>
+        {/* Hover actions */}
+        <div className="absolute -top-3 right-0 opacity-0 group-hover:opacity-100 transition-all duration-150 flex gap-0.5 bg-white border border-slate-100 shadow-md rounded-xl p-1 z-10">
           {content && (
             <button
               onClick={handleCopy}
-              className="p-1 hover:bg-slate-50 rounded transition-colors"
+              className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors"
               title={copied ? "Copied!" : "Copy"}
             >
-              <Copy size={12} className={copied ? "text-emerald-500" : "text-slate-400 hover:text-slate-600"} />
+              <Copy size={11} className={copied ? "text-primary" : "text-slate-400"} />
             </button>
           )}
           <button
             onClick={() => setThumbed(thumbed === "up" ? null : "up")}
-            className="p-1 hover:bg-slate-50 rounded transition-colors"
+            className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors"
             title="Good response"
           >
-            <ThumbsUp size={12} className={thumbed === "up" ? "text-rose-500" : "text-slate-400 hover:text-rose-500"} />
+            <ThumbsUp size={11} className={thumbed === "up" ? "text-primary" : "text-slate-400 hover:text-primary"} />
           </button>
           <button
             onClick={() => setThumbed(thumbed === "down" ? null : "down")}
-            className="p-1 hover:bg-slate-50 rounded transition-colors"
-            title="Bad response"
+            className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors"
+            title="Needs improvement"
           >
-            <ThumbsDown size={12} className={thumbed === "down" ? "text-slate-600" : "text-slate-400 hover:text-slate-600"} />
+            <ThumbsDown size={11} className={thumbed === "down" ? "text-slate-700" : "text-slate-400 hover:text-slate-600"} />
           </button>
           {onRegenerate && (
             <button
               onClick={onRegenerate}
-              className="p-1 hover:bg-slate-50 rounded text-slate-400 hover:text-slate-600 transition-colors"
+              className="p-1.5 hover:bg-slate-50 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
               title="Regenerate response"
             >
-              <RefreshCw size={12} />
+              <RefreshCw size={11} />
             </button>
           )}
         </div>
@@ -165,11 +176,68 @@ function AgentBubble({
   );
 }
 
+function ThinkingBubble() {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -16, y: 8 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      className="max-w-[78%]"
+    >
+      <div className="flex items-center gap-2 mb-2 opacity-70">
+        <AgentAvatar />
+        <span className="text-[11px] font-semibold text-primary tracking-wide">CareerAgent</span>
+      </div>
+      <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-5 py-4 shadow-sm overflow-hidden relative">
+        <div className="absolute left-0 top-3 bottom-3 w-0.5 bg-primary rounded-full" />
+        <div className="pl-3 flex items-center gap-1.5">
+          {[0, 1, 2].map(i => (
+            <motion.span
+              key={i}
+              className="w-2 h-2 rounded-full bg-primary"
+              animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
+            />
+          ))}
+          <span className="text-xs text-slate-400 ml-2">Thinking…</span>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 const SUGGESTIONS = [
-  { emoji: "🔍", text: "Find Senior React roles in New York", icon: Search },
-  { emoji: "📄", text: "Parse and analyze my uploaded resume", icon: FileText },
-  { emoji: "📧", text: "Draft cold emails to hiring managers", icon: Mail },
-  { emoji: "🎯", text: "Match my profile against open positions", icon: Sparkles },
+  {
+    icon: Search,
+    label: "Job Search",
+    text: "Find Senior React roles in New York",
+    gradient: "from-violet-500 to-indigo-500",
+    bg: "from-violet-50 to-indigo-50",
+    border: "border-violet-100 hover:border-violet-200",
+  },
+  {
+    icon: FileText,
+    label: "Resume",
+    text: "Parse and analyze my uploaded resume",
+    gradient: "from-primary to-emerald-400",
+    bg: "from-[hsl(159,95%,97%)] to-[hsl(159,90%,92%)]",
+    border: "border-[hsl(159,90%,92%)] hover:border-primary/30",
+  },
+  {
+    icon: Mail,
+    label: "Outreach",
+    text: "Draft cold emails to hiring managers",
+    gradient: "from-amber-500 to-orange-500",
+    bg: "from-amber-50 to-orange-50",
+    border: "border-amber-100 hover:border-amber-200",
+  },
+  {
+    icon: Zap,
+    label: "Match",
+    text: "Match my profile against open positions",
+    gradient: "from-emerald-500 to-teal-500",
+    bg: "from-emerald-50 to-teal-50",
+    border: "border-emerald-100 hover:border-emerald-200",
+  },
 ];
 
 interface CenterPanelProps {
@@ -179,7 +247,7 @@ interface CenterPanelProps {
 
 export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelProps) {
   const [inputValue, setInputValue] = useState("");
-  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -187,12 +255,11 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Track current session id inside the component for sendAction closures
   const sessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => { sessionIdRef.current = activeSessionId; }, [activeSessionId]);
 
-  // Fetch history when session changes
   useEffect(() => {
     if (activeSessionId) {
       setMessages([]);
@@ -200,7 +267,6 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       getChatHistory(activeSessionId)
         .then((data) => {
           const formattedMessages: ChatMessage[] = data.messages
-            // Hide internal action prefix messages from the chat
             .filter((m) => !(m.role === "user" && m.content.startsWith("__")))
             .map((m) => ({
               id: m.id,
@@ -214,10 +280,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           setMessages(formattedMessages);
           setIsSending(false);
         })
-        .catch((err) => {
-          console.error("Failed to load history:", err);
-          setIsSending(false);
-        });
+        .catch(() => setIsSending(false));
     } else {
       setMessages([]);
     }
@@ -230,13 +293,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const handleScroll = () => {
     if (scrollContainerRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-      setShowScrollTop(scrollHeight - scrollTop - clientHeight > 100);
+      setShowScrollBtn(scrollHeight - scrollTop - clientHeight > 120);
     }
   };
 
   const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
 
-  /** Send a visible user message + get AI response */
   const handleSend = async (overrideText?: string) => {
     const text = (overrideText || inputValue).trim();
     if (!text || (isSending && !overrideText)) return;
@@ -256,9 +318,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     try {
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
       const resp = await sendChatMessage(text, targetSessionId);
-
       if (!activeSessionId) onSessionCreated(targetSessionId);
-
       setMessages((prev) => [
         ...prev,
         {
@@ -275,7 +335,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "⚠️ I couldn't connect to the backend server. Please make sure it's running on `http://localhost:8080`.",
+          content: "⚠️ Couldn't reach the backend. Make sure it's running on `http://localhost:8080`.",
           time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
         },
       ]);
@@ -284,18 +344,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     }
   };
 
-  /**
-   * Send a programmatic action (card button click) without showing the
-   * raw action prefix in the chat. Only the AI response is shown.
-   */
   const sendAction = async (action: string) => {
     setIsSending(true);
     try {
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
       const resp = await sendChatMessage(action, targetSessionId);
-
       if (!activeSessionId) onSessionCreated(targetSessionId);
-
       setMessages((prev) => [
         ...prev,
         {
@@ -326,13 +380,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     if (!file) return;
 
     if (file.size > 5 * 1024 * 1024) {
-      alert("File is too large. Max 5MB allowed for context.");
+      alert("File is too large. Max 5MB allowed.");
       return;
     }
     const ext = file.name.split(".").pop()?.toLowerCase();
-    const validExts = ["pdf", "docx", "txt", "md"];
-    if (!validExts.includes(ext || "")) {
-      alert("Supported context files: PDF, DOCX, TXT, MD");
+    if (!["pdf", "docx", "txt", "md"].includes(ext || "")) {
+      alert("Supported: PDF, DOCX, TXT, MD");
       return;
     }
 
@@ -343,7 +396,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       {
         id: tempId,
         role: "assistant",
-        content: `📎 Attaching **${file.name}** to conversation context...`,
+        content: `📎 Attaching **${file.name}** to context…`,
         time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
       },
     ]);
@@ -351,15 +404,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     try {
       const { uploadChatContext } = await import("@/services/api");
       const resp = await uploadChatContext(file);
-
       setMessages((prev) =>
         prev.map((m) =>
           m.id === tempId
-            ? { ...m, content: `✅ Added context from **${file.name}**. I've indexed the file content.` }
+            ? { ...m, content: `✅ Context loaded from **${file.name}**.` }
             : m
         )
       );
-
       await handleSend(
         `[CONTEXT UPLOAD: ${file.name}]\n\nContent:\n${resp.content.slice(0, 5000)}\n\nPlease acknowledge this information.`
       );
@@ -367,7 +418,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       setMessages((prev) =>
         prev.map((m) =>
           m.id === tempId
-            ? { ...m, content: `❌ Failed to add context from **${file.name}**: ${err.message || "Unknown error"}` }
+            ? { ...m, content: `❌ Failed to load **${file.name}**: ${err.message || "Unknown error"}` }
             : m
         )
       );
@@ -377,26 +428,20 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     }
   };
 
-  /** Render the appropriate rich card based on metadata.type */
   function renderMetadataCard(msg: ChatMessage) {
     const meta = msg.metadata;
     if (!meta || !meta.type) return null;
-
     switch (meta.type) {
-      case "job_results":
-        return <JobResultsCard metadata={meta as any} onSendAction={sendAction} />;
-      case "cv_review":
-        return <CVReviewCard metadata={meta as any} onSendAction={sendAction} />;
-      case "email_review":
-        return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} />;
-      case "application_sent":
-        return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} />;
-      case "interview_ready":
-        return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
-      default:
-        return null;
+      case "job_results":     return <JobResultsCard metadata={meta as any} onSendAction={sendAction} />;
+      case "cv_review":       return <CVReviewCard metadata={meta as any} onSendAction={sendAction} />;
+      case "email_review":    return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} />;
+      case "application_sent":return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} />;
+      case "interview_ready": return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
+      default: return null;
     }
   }
+
+  const lastUserContent = [...messages].reverse().find(m => m.role === "user" && !m.content.startsWith("__"))?.content;
 
   return (
     <main className="flex flex-col h-full bg-white relative">
@@ -412,42 +457,57 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-8 py-6 space-y-6"
+        className="flex-1 overflow-y-auto px-6 py-6 space-y-5"
+        style={{ background: "linear-gradient(180deg, #fafafa 0%, #ffffff 100%)" }}
       >
         {/* Empty State */}
         {messages.length === 0 && !isSending && (
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, ease: "easeOut" }}
-            className="flex flex-col items-center justify-center h-full min-h-[400px]"
+            transition={{ duration: 0.5, ease: "easeOut" }}
+            className="flex flex-col items-center justify-center h-full min-h-[420px] px-4"
           >
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-rose-100 to-rose-50 flex items-center justify-center mb-6 shadow-sm">
-              <Sparkles size={28} className="text-rose-500" />
+            {/* Brand mark */}
+            <div className="relative mb-7">
+              <div className="w-20 h-20 rounded-3xl bg-primary flex items-center justify-center shadow-lg" style={{ boxShadow: "0 8px 32px -4px hsl(159 95% 44% / 40%)" }}>
+                <Bot size={34} className="text-white" />
+              </div>
+              <motion.div
+                className="absolute -bottom-1 -right-1 w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center shadow-md"
+                animate={{ scale: [1, 1.15, 1] }}
+                transition={{ duration: 2, repeat: Infinity }}
+              >
+                <Sparkles size={12} className="text-white" />
+              </motion.div>
             </div>
-            <h2 className="text-2xl font-serif font-bold text-slate-800 mb-2">
-              <span className="text-foreground">Career</span>
+
+            <h2 className="text-[26px] font-serif font-bold text-slate-900 mb-2 text-center">
+              <span className="text-slate-800">Career</span>
               <span className="text-primary">Agent</span> is ready
             </h2>
-            <p className="text-sm text-slate-500 font-sans max-w-md text-center mb-8 leading-relaxed">
-              Send a message to get started. I can search for jobs, tailor your resume, contact hiring managers, and prepare you for interviews — all in one conversation.
+            <p className="text-sm text-slate-500 font-sans max-w-sm text-center mb-8 leading-relaxed">
+              Your AI assistant for job search, resume tailoring, HR outreach, and interview prep — all in one conversation.
             </p>
-            <div className="grid grid-cols-2 gap-3 max-w-lg w-full">
+
+            {/* Suggestion cards */}
+            <div className="grid grid-cols-2 gap-3 w-full max-w-md">
               {SUGGESTIONS.map((s, i) => (
                 <motion.button
                   key={i}
-                  initial={{ opacity: 0, y: 10 }}
+                  initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 + i * 0.1, duration: 0.3 }}
+                  transition={{ delay: 0.2 + i * 0.08, duration: 0.3 }}
                   onClick={() => handleSend(s.text)}
-                  className="flex items-center gap-3 px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-left hover:bg-rose-50 hover:border-rose-200 hover:shadow-sm transition-all group"
+                  className={`flex flex-col gap-2.5 p-4 bg-gradient-to-br ${s.bg} border ${s.border} rounded-2xl text-left hover:shadow-md transition-all group`}
                 >
-                  <div className="w-8 h-8 rounded-lg bg-white border border-slate-100 flex items-center justify-center flex-shrink-0 group-hover:border-rose-200 transition-colors">
-                    <s.icon size={16} className="text-slate-500 group-hover:text-rose-500 transition-colors" />
+                  <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${s.gradient} flex items-center justify-center shadow-sm`}>
+                    <s.icon size={15} className="text-white" />
                   </div>
-                  <span className="text-[13px] font-medium text-slate-700 font-sans group-hover:text-rose-700 transition-colors leading-tight">
-                    {s.emoji} {s.text}
-                  </span>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">{s.label}</p>
+                    <p className="text-[12px] font-medium text-slate-700 leading-tight">{s.text}</p>
+                  </div>
                 </motion.button>
               ))}
             </div>
@@ -455,113 +515,108 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         )}
 
         {/* Messages */}
-        {(() => {
-          // Find the last user message for Regenerate
-          const lastUserContent = [...messages].reverse().find(m => m.role === "user" && !m.content.startsWith("__"))?.content;
+        {messages.map((msg) => {
+          if (msg.role === "user" && msg.content.startsWith("__")) return null;
 
-          return messages.map((msg) => {
-            // Hide raw action-prefix user messages (they show up when reloading history)
-            if (msg.role === "user" && msg.content.startsWith("__")) return null;
+          return msg.role === "user" ? (
+            <UserBubble
+              key={msg.id}
+              time={msg.time}
+              content={msg.content}
+              onEdit={(text) => {
+                setInputValue(text);
+                inputRef.current?.focus();
+              }}
+            >
+              {msg.content}
+            </UserBubble>
+          ) : (
+            <AgentBubble
+              key={msg.id}
+              time={msg.time}
+              content={msg.content}
+              onRegenerate={lastUserContent ? () => handleSend(lastUserContent) : undefined}
+            >
+              <div className="prose prose-sm prose-slate max-w-none prose-p:leading-relaxed prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-headings:font-sans prose-headings:font-bold prose-a:text-primary prose-code:bg-slate-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-primary prose-code:text-xs prose-pre:bg-slate-900 prose-pre:rounded-xl">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {msg.content}
+                </ReactMarkdown>
+              </div>
+              {renderMetadataCard(msg)}
+            </AgentBubble>
+          );
+        })}
 
-            return msg.role === "user" ? (
-              <UserBubble
-                key={msg.id}
-                time={msg.time}
-                content={msg.content}
-                onEdit={(text) => setInputValue(text)}
-              >
-                {msg.content}
-              </UserBubble>
-            ) : (
-              <AgentBubble
-                key={msg.id}
-                time={msg.time}
-                content={msg.content}
-                onRegenerate={lastUserContent ? () => handleSend(lastUserContent) : undefined}
-              >
-                <div className="prose prose-sm prose-slate max-w-none prose-p:leading-relaxed prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-headings:font-sans prose-headings:font-bold prose-a:text-primary prose-code:bg-slate-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-rose-600 prose-code:text-xs prose-pre:bg-slate-900 prose-pre:rounded-xl">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
-                {/* Rich metadata card rendered below the text */}
-                {renderMetadataCard(msg)}
-              </AgentBubble>
-            );
-          });
-        })()}
-
-        {/* Thinking indicator */}
-        {(isSending || isUploading) && (
-          <div className="flex items-center gap-2 p-4">
-            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">
-              {isUploading ? "Uploading file..." : "Thinking..."}
-            </span>
-          </div>
-        )}
+        {/* Animated thinking indicator */}
+        {(isSending || isUploading) && <ThinkingBubble />}
 
         <div ref={chatEndRef} />
       </div>
 
-      {/* Scroll to Bottom */}
+      {/* Scroll to bottom */}
       <AnimatePresence>
-        {showScrollTop && (
+        {showScrollBtn && (
           <motion.button
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, scale: 0.8, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.8, y: 8 }}
             onClick={scrollToBottom}
-            className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 bg-white shadow-lg border border-slate-100 rounded-full px-4 py-2 flex items-center gap-2 hover:bg-slate-50 transition-colors"
+            className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 bg-white shadow-lg border border-slate-100 rounded-full px-4 py-2 flex items-center gap-2 hover:bg-slate-50 transition-colors text-xs font-semibold text-slate-600"
           >
-            <span className="text-xs font-medium text-slate-600 font-sans">↓ Latest</span>
+            ↓ Latest
           </motion.button>
         )}
       </AnimatePresence>
 
       {/* Input Area */}
-      <div className="px-8 py-4 border-t border-slate-100 bg-white flex-shrink-0">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key="input-box"
-            layoutId="main-input"
-            className="w-full h-14 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm flex items-center px-5 gap-3 focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-100 focus-within:bg-white transition-all"
-          >
+      <div className="px-6 py-4 border-t border-slate-100 bg-white/95 backdrop-blur-sm flex-shrink-0">
+        <div className="relative w-full bg-white border border-slate-200 rounded-2xl shadow-sm focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={inputValue}
+            onChange={(e) => {
+              setInputValue(e.target.value);
+              // auto-resize
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            disabled={isSending}
+            placeholder="Message CareerAgent… (Enter to send, Shift+Enter for newline)"
+            className="w-full px-5 pt-3.5 pb-12 bg-transparent text-sm text-foreground font-sans placeholder:text-slate-400 outline-none resize-none leading-relaxed disabled:opacity-50 max-h-40"
+            style={{ minHeight: "52px" }}
+          />
+          {/* Bottom toolbar */}
+          <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between">
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className="p-1 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50"
+              className="p-2 hover:bg-slate-100 rounded-xl transition-colors disabled:opacity-40 flex items-center gap-1.5 text-slate-400 hover:text-slate-600"
+              title="Attach file (PDF, DOCX, TXT, MD)"
             >
-              <Paperclip size={18} className="text-slate-400 hover:text-slate-600 cursor-pointer transition-colors" />
+              <Paperclip size={16} />
+              <span className="text-[11px] font-medium hidden sm:block">Attach</span>
             </button>
-            <Mic size={18} className="text-slate-400 hover:text-slate-600 cursor-pointer transition-colors flex-shrink-0" />
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              disabled={isSending}
-              placeholder="Send a message to CareerAgent..."
-              className="flex-1 bg-transparent text-sm text-foreground font-sans placeholder:text-slate-400 outline-none caret-primary disabled:opacity-50"
-            />
             <button
               onClick={() => handleSend()}
               disabled={!inputValue.trim() || isSending}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200 flex-shrink-0 ${
-                inputValue.trim()
-                  ? "bg-rose-600 hover:bg-rose-700 hover:scale-105 cursor-pointer shadow-sm"
-                  : "bg-slate-100 cursor-not-allowed"
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all duration-200 ${
+                inputValue.trim() && !isSending
+                  ? "bg-primary hover:brightness-95 text-white shadow-sm"
+                  : "bg-slate-100 text-slate-300 cursor-not-allowed"
               }`}
             >
-              <ArrowUp size={18} className={inputValue.trim() ? "text-white" : "text-slate-300"} />
+              <ArrowUp size={14} />
+              Send
             </button>
-          </motion.div>
-        </AnimatePresence>
+          </div>
+        </div>
       </div>
     </main>
   );
