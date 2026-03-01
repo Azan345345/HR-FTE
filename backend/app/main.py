@@ -19,34 +19,40 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     os.makedirs(settings.GENERATED_DIR, exist_ok=True)
 
-    # Create database tables (for SQLite dev or first run)
+    is_postgres = "postgresql" in str(settings.DATABASE_URL)
+    json_type = "JSONB" if is_postgres else "JSON"
+
+    # ── Step 1: create tables ────────────────────────────────────────────────
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Auto-migrate: add new columns if missing (SQLite doesn't support IF NOT EXISTS on ALTER TABLE)
-        # Use JSONB for PostgreSQL, JSON for SQLite (TEXT fallback)
-        is_postgres = "postgresql" in str(settings.DATABASE_URL)
-        json_type = "JSONB" if is_postgres else "JSON"
-        new_columns = [
-            ("interview_preps", "questions_to_ask",        json_type),
-            ("interview_preps", "system_design_questions", json_type),
-            ("interview_preps", "coding_challenges",       json_type),
-            ("interview_preps", "cultural_questions",      json_type),
-            ("interview_preps", "study_plan",              json_type),
-        ]
-        for table, column, col_type in new_columns:
-            try:
-                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
-            except Exception:
-                pass  # Column already exists
 
-        # Make tailored_cvs.job_id nullable to allow general CV improvements (no specific job)
-        if is_postgres:
-            try:
+    # ── Step 2: ADD COLUMN migrations — each in its own transaction so a
+    #    "column already exists" failure doesn't abort the whole block.
+    new_columns = [
+        ("interview_preps", "questions_to_ask",        json_type),
+        ("interview_preps", "system_design_questions", json_type),
+        ("interview_preps", "coding_challenges",       json_type),
+        ("interview_preps", "cultural_questions",      json_type),
+        ("interview_preps", "study_plan",              json_type),
+    ]
+    for table, column, col_type in new_columns:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+        except Exception:
+            pass  # Column already exists — safe to ignore
+
+    # ── Step 3: make tailored_cvs.job_id nullable (general CV improvements
+    #    have no associated job).  Runs in its own transaction so it is never
+    #    affected by the "column already exists" failures above.
+    if is_postgres:
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(text(
                     "ALTER TABLE tailored_cvs ALTER COLUMN job_id DROP NOT NULL"
                 ))
-            except Exception:
-                pass  # Already nullable or column doesn't exist
+        except Exception:
+            pass  # Already nullable — safe to ignore
 
     # Start Gmail watcher
     from app.agents.gmail_watcher import gmail_watcher
