@@ -105,7 +105,7 @@ export default function GmailSetupGuide() {
                 <p className="text-slate-700 font-semibold mb-2">This step is critical.</p>
                 <p className="text-slate-600 mb-3">Under <strong>Authorized redirect URIs</strong>, click <strong>+ Add URI</strong> and enter:</p>
                 <div className="bg-slate-900 text-green-400 font-mono text-sm px-4 py-3 rounded-xl mb-3 break-all select-all">
-                  {window.location.origin}/settings/google-callback
+                  https://frontend-ten-mocha-80.vercel.app/settings/google-callback
                 </div>
                 <p className="text-slate-500 text-sm">
                   This tells Google where to send users after they approve access.
