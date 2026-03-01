@@ -105,8 +105,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     try {
       await deleteCV(id);
       await fetchCVs();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Delete failed:", err);
+      alert(`Failed to delete CV: ${err?.message || "Unknown error"}`);
     }
   };
 

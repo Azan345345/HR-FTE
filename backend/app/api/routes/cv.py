@@ -5,10 +5,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.db.database import get_db
-from app.db.models import User, UserCV, TailoredCV, CVEmbedding, Job, JobSearch
+from app.db.models import User, UserCV, TailoredCV, CVEmbedding, Application, Job, JobSearch
 from app.api.deps import get_current_user
 from app.schemas.schemas import CVResponse, CVListResponse, TailoredCVResponse, TailorCVRequest
 from app.config import settings
@@ -159,18 +159,30 @@ async def delete_cv(
 
     was_primary = cv.is_primary
 
-    # 1. Delete all CV embeddings for this CV
-    emb_result = await db.execute(
-        select(CVEmbedding).where(CVEmbedding.cv_id == cv_id)
-    )
-    for emb in emb_result.scalars().all():
-        await db.delete(emb)
-
-    # 2. Delete all tailored CVs (and their generated PDF files) linked to this CV
+    # 1. Collect tailored CVs linked to this CV (need IDs to NULL-out Application FKs)
     tailored_result = await db.execute(
         select(TailoredCV).where(TailoredCV.original_cv_id == cv_id)
     )
-    for tcv in tailored_result.scalars().all():
+    tailored_cvs = tailored_result.scalars().all()
+    tailored_cv_ids = [tcv.id for tcv in tailored_cvs]
+
+    # 2. NULL-out Application.tailored_cv_id to avoid FK violation before deleting TailoredCVs
+    if tailored_cv_ids:
+        await db.execute(
+            update(Application)
+            .where(Application.tailored_cv_id.in_(tailored_cv_ids))
+            .values(tailored_cv_id=None)
+        )
+
+    # 3. NULL-out JobSearch.cv_id to avoid FK violation before deleting UserCV
+    await db.execute(
+        update(JobSearch)
+        .where(JobSearch.cv_id == cv_id)
+        .values(cv_id=None)
+    )
+
+    # 4. Delete generated PDF files and TailoredCV records
+    for tcv in tailored_cvs:
         if tcv.pdf_path and os.path.exists(tcv.pdf_path):
             try:
                 os.remove(tcv.pdf_path)
@@ -178,18 +190,25 @@ async def delete_cv(
                 pass
         await db.delete(tcv)
 
-    # 3. Delete the original CV file from disk
+    # 5. Delete CVEmbedding rows (also covered by DB CASCADE but explicit is safer)
+    emb_result = await db.execute(
+        select(CVEmbedding).where(CVEmbedding.cv_id == cv_id)
+    )
+    for emb in emb_result.scalars().all():
+        await db.delete(emb)
+
+    # 6. Delete the original CV file from disk
     if cv.file_path and os.path.exists(cv.file_path):
         try:
             os.remove(cv.file_path)
         except OSError:
             pass
 
-    # 4. Delete the DB record
+    # 7. Delete the UserCV DB record
     await db.delete(cv)
-    await db.flush()  # apply deletions before promoting primary
+    await db.flush()
 
-    # 5. If the deleted CV was primary, promote the next most recent CV
+    # 8. If the deleted CV was primary, auto-promote the next most recent one
     if was_primary:
         next_result = await db.execute(
             select(UserCV)

@@ -290,6 +290,7 @@ async def _maybe_ask_cv_selection(
       ("error text", None)  — no CV uploaded at all
     """
     import base64 as _b64
+    from sqlalchemy import select
     from app.db.models import UserCV
 
     if selected_cv_id:
