@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { X, Eye, EyeOff, ShieldCheck, Database, Zap, User, Plus, Trash2, FileText, CheckCircle2, Star, Brain, Sparkles, BookOpen, Link, Linkedin } from "lucide-react";
-import { getSettingsConfig, listCVs, uploadCV, deleteCV, setPrimaryCV, getSkills, getGoogleAuthUrl, getProfile, saveProfile } from "@/services/api";
+import { X, Eye, EyeOff, ShieldCheck, Database, Zap, User, Plus, Trash2, FileText, CheckCircle2, Star, Brain, Sparkles, BookOpen, Link, Linkedin, Mail, ExternalLink, KeyRound, CheckCheck, AlertCircle } from "lucide-react";
+import { getSettingsConfig, listCVs, uploadCV, deleteCV, setPrimaryCV, getSkills, getGoogleAuthUrl, getProfile, saveProfile, saveGoogleCredentials, getGoogleCredentials } from "@/services/api";
 import { useAuthStore } from "@/hooks/useAuth";
 
 interface SettingsModalProps {
@@ -9,7 +9,7 @@ interface SettingsModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const TABS = ["Profile", "API Keys", "Data Sources", "Skills", "Privacy", "About"];
+const TABS = ["Profile", "API Keys", "Integrations", "Data Sources", "Skills", "About"];
 
 export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState("Profile");
@@ -29,6 +29,14 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [linkedinUrl, setLinkedinUrl] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+
+  // Integrations tab state
+  const [googleClientId, setGoogleClientId] = useState("");
+  const [googleClientSecret, setGoogleClientSecret] = useState("");
+  const [showClientSecret, setShowClientSecret] = useState(false);
+  const [savingGoogleCreds, setSavingGoogleCreds] = useState(false);
+  const [googleCredsSaved, setGoogleCredsSaved] = useState(false);
+  const [googleCredsConfigured, setGoogleCredsConfigured] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -57,6 +65,14 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     }
     if (open && activeTab === "Skills") {
       fetchSkills();
+    }
+    if (open && activeTab === "Integrations") {
+      getGoogleCredentials()
+        .then((data) => {
+          setGoogleClientId(data.client_id || "");
+          setGoogleCredsConfigured(data.configured);
+        })
+        .catch(() => {});
     }
   }, [open, activeTab]);
 
@@ -137,6 +153,26 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
       console.error("Failed to save profile:", err);
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const handleSaveGoogleCredentials = async () => {
+    if (!googleClientId.trim() || !googleClientSecret.trim()) {
+      alert("Please enter both Client ID and Client Secret.");
+      return;
+    }
+    setSavingGoogleCreds(true);
+    try {
+      await saveGoogleCredentials(googleClientId.trim(), googleClientSecret.trim());
+      setGoogleCredsSaved(true);
+      setGoogleCredsConfigured(true);
+      setGoogleClientSecret(""); // clear secret from UI after saving
+      setTimeout(() => setGoogleCredsSaved(false), 2500);
+    } catch (err) {
+      console.error("Failed to save credentials:", err);
+      alert("Failed to save credentials.");
+    } finally {
+      setSavingGoogleCreds(false);
     }
   };
 
@@ -287,6 +323,113 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {activeTab === "Integrations" && (
+                  <div className="space-y-6">
+                    {/* Gmail Setup Section */}
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-bold text-slate-700 font-sans flex items-center gap-2">
+                          <Mail size={16} className="text-rose-500" />
+                          Gmail & Google Services
+                        </h4>
+                        {googleCredsConfigured && (
+                          <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 bg-green-50 text-green-700 rounded-full font-bold uppercase tracking-wider">
+                            <CheckCheck size={10} />
+                            Credentials Saved
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 font-sans flex gap-2 items-start">
+                        <AlertCircle size={14} className="mt-0.5 shrink-0 text-amber-500" />
+                        <div>
+                          You need your own Google OAuth credentials to connect Gmail.{" "}
+                          <a
+                            href="/gmail-setup"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="underline font-semibold text-amber-900 hover:text-rose-600 inline-flex items-center gap-0.5"
+                          >
+                            How to get credentials <ExternalLink size={10} />
+                          </a>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="grid gap-1.5">
+                          <label className="text-[12px] font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+                            <KeyRound size={12} className="text-slate-400" />
+                            OAuth Client ID
+                          </label>
+                          <input
+                            type="text"
+                            value={googleClientId}
+                            onChange={(e) => setGoogleClientId(e.target.value)}
+                            placeholder="xxxxxxxxxx.apps.googleusercontent.com"
+                            className="h-10 px-3 rounded-xl border border-black/[0.09] bg-slate-50/80 text-[13px] font-mono focus:border-primary focus:bg-white focus:ring-[3px] focus:ring-primary/10 transition-all outline-none"
+                          />
+                        </div>
+                        <div className="grid gap-1.5">
+                          <label className="text-[12px] font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+                            <KeyRound size={12} className="text-slate-400" />
+                            OAuth Client Secret
+                          </label>
+                          <div className="relative">
+                            <input
+                              type={showClientSecret ? "text" : "password"}
+                              value={googleClientSecret}
+                              onChange={(e) => setGoogleClientSecret(e.target.value)}
+                              placeholder={googleCredsConfigured ? "••••••••••••• (saved)" : "GOCSPX-..."}
+                              className="w-full h-10 px-3 pr-10 rounded-xl border border-black/[0.09] bg-slate-50/80 text-[13px] font-mono focus:border-primary focus:bg-white focus:ring-[3px] focus:ring-primary/10 transition-all outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowClientSecret((v) => !v)}
+                              className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                            >
+                              {showClientSecret ? <EyeOff size={16} /> : <Eye size={16} />}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-1">
+                        <button
+                          onClick={handleSaveGoogleCredentials}
+                          disabled={savingGoogleCreds}
+                          className={`px-5 py-2 rounded-xl text-[13px] font-semibold transition-all active:scale-[0.97] disabled:opacity-60 ${
+                            googleCredsSaved
+                              ? "bg-green-500 text-white"
+                              : "bg-primary text-white hover:brightness-110"
+                          }`}
+                          style={{ boxShadow: "var(--shadow-brand-sm)" }}
+                        >
+                          {savingGoogleCreds ? "Saving..." : googleCredsSaved ? "✓ Saved!" : "Save Credentials"}
+                        </button>
+
+                        <button
+                          onClick={handleConnectGmail}
+                          disabled={!googleCredsConfigured || connectingGmail}
+                          className={`flex items-center gap-2 px-5 py-2 rounded-xl text-[13px] font-semibold transition-all active:scale-[0.97] ${
+                            googleCredsConfigured
+                              ? "bg-white border border-slate-200 text-slate-700 hover:border-rose-300 hover:text-rose-600 disabled:opacity-50"
+                              : "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
+                          }`}
+                          title={!googleCredsConfigured ? "Save credentials first" : "Connect your Gmail account"}
+                        >
+                          <Mail size={14} />
+                          {connectingGmail ? "Redirecting..." : "Connect Gmail"}
+                        </button>
+                      </div>
+                      {!googleCredsConfigured && (
+                        <p className="text-[11px] text-slate-400 font-sans">
+                          Save your credentials first, then click "Connect Gmail" to authorize.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
 

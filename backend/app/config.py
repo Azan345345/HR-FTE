@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     GENERATED_DIR: str = "./generated"
 
+    # --- Frontend ---
+    FRONTEND_URL: str = "http://localhost:5173"
+
     model_config = {
         "env_file": _env_path,
         "env_file_encoding": "utf-8",

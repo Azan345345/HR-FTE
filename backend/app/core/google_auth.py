@@ -9,15 +9,20 @@ from app.config import settings
 logger = structlog.get_logger()
 
 
-async def get_google_auth_url(redirect_uri: str, scopes: list[str]) -> str:
+async def get_google_auth_url(
+    redirect_uri: str,
+    scopes: list[str],
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+) -> str:
     """Generate Google OAuth2 authorization URL."""
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_config(
         {
             "web": {
-                "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
-                "client_secret": settings.GOOGLE_OAUTH_CLIENT_SECRET,
+                "client_id": client_id or settings.GOOGLE_OAUTH_CLIENT_ID,
+                "client_secret": client_secret or settings.GOOGLE_OAUTH_CLIENT_SECRET,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
             }
@@ -29,15 +34,21 @@ async def get_google_auth_url(redirect_uri: str, scopes: list[str]) -> str:
     return auth_url
 
 
-async def exchange_code_for_tokens(code: str, redirect_uri: str, scopes: list[str]) -> dict:
+async def exchange_code_for_tokens(
+    code: str,
+    redirect_uri: str,
+    scopes: list[str],
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+) -> dict:
     """Exchange authorization code for access + refresh tokens."""
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_config(
         {
             "web": {
-                "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
-                "client_secret": settings.GOOGLE_OAUTH_CLIENT_SECRET,
+                "client_id": client_id or settings.GOOGLE_OAUTH_CLIENT_ID,
+                "client_secret": client_secret or settings.GOOGLE_OAUTH_CLIENT_SECRET,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
             }

@@ -273,6 +273,21 @@ export function exchangeGoogleCode(code: string) {
     });
 }
 
+export function saveGoogleCredentials(client_id: string, client_secret: string) {
+    return api<{ status: string }>("/integrations/google/credentials", {
+        method: "POST",
+        token: getToken(),
+        body: { client_id, client_secret },
+    });
+}
+
+export function getGoogleCredentials() {
+    return api<{ client_id: string; has_secret: boolean; configured: boolean }>(
+        "/integrations/google/credentials",
+        { token: getToken() }
+    );
+}
+
 // ── Settings Service ─────────────────────────
 export function getSettingsConfig() {
     return api<any>("/settings/config", { token: getToken() });
