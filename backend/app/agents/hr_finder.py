@@ -1,20 +1,32 @@
-"""HR Finder Agent — finds real, verified HR/recruiter contacts for job applications.
+"""HR Finder Agent — finds verified HR/recruiter contacts for job applications.
 
-Strategy order (stops at first real result):
-  1. Company website scraper         — FREE, no API key needed
-  2. Apify Contact Info Scraper      — FREE with existing APIFY_API_KEY
-  3. Prospeo Search + Enrich Person  — PROSPEO_API_KEY required
-                                       Searches 200M+ contacts by company domain + HR dept
-                                       Enriches top results for verified emails
-  4. SerpAPI HR snippet search       — FREE with existing SERPAPI_API_KEY
-                                       Extracts emails found directly in Google snippets ONLY
-                                       Never constructs/guesses emails from names
-  5. Honest fallback                 — never fabricates an email
+Strategy order (stops only when confident contacts are found):
+  1. Hunter.io Domain Search (HR department)         — HUNTER_API_KEY
+  2. Hunter.io Domain Search (Executive/Management)  — HUNTER_API_KEY
+  3. Hunter.io Domain Search (broad + scoring)       — HUNTER_API_KEY
+  4. Company website scraper                         — FREE
+  5. Apify Contact Info Scraper                      — APIFY_API_KEY
+  6. Prospeo Search + Enrich Person                  — PROSPEO_API_KEY
+  7. SerpAPI Google HR search                        — SERPAPI_API_KEY
+  8. Pattern prefix fallback (with Hunter Verifier)  — HUNTER_API_KEY / FREE
 
-NOTE: MX record verification only confirms a domain accepts mail — it cannot verify
-that a specific mailbox (hr@company.com) exists. Any strategy that constructs emails
-from names or common prefixes and "verifies" them via MX will produce false positives.
-Only emails explicitly found in page text or API responses are returned.
+Multi-email design:
+  Every strategy contributes to a ranked list of contacts across four roles:
+    - "hr"         HR / recruiter / talent acquisition
+    - "management" Head of dept / department manager
+    - "executive"  CEO / C-level / VP
+    - "generic"    info@, contact@, company-level generic inboxes
+    - "pattern"    constructed fallback addresses (hr@, careers@, …)
+
+  The return dict always includes:
+    hr_email       — single best choice (backward compat)
+    all_recipients — list of {email, name, role, confidence, source}
+                     ordered by priority; may include pattern fallbacks
+
+Send strategy (used by send_to_all_recipients):
+  - If ANY real contacts found (non-pattern): send to ALL of them
+    grouped as: hr → management → executive → generic
+  - If ONLY pattern fallbacks: send to verified/accept_all patterns (top 3)
 """
 
 import re
@@ -24,6 +36,7 @@ from typing import Optional
 
 logger = structlog.get_logger()
 
+# ── HR keyword scoring ────────────────────────────────────────────────────────
 _HR_KEYWORDS = (
     "recruiter", "talent acquisition", "hr manager", "human resources",
     "people operations", "hiring manager", "talent partner", "talent lead",
@@ -31,17 +44,31 @@ _HR_KEYWORDS = (
     "hr", "recruit", "talent", "hiring", "people",
 )
 
-_EMAIL_PATTERNS = [
-    "{first}.{last}@{domain}",
-    "{first}@{domain}",
-    "{f}{last}@{domain}",
-    "{first}{last}@{domain}",
-    "hr@{domain}",
-    "recruiting@{domain}",
-    "talent@{domain}",
-    "careers@{domain}",
-    "jobs@{domain}",
-    "people@{domain}",
+_EXEC_KEYWORDS = (
+    "ceo", "chief executive", "coo", "cto", "founder", "co-founder",
+    "president", "managing director", "executive director",
+)
+
+_MGMT_KEYWORDS = (
+    "head of", "director of", "vp of", "vice president", "department head",
+    "manager", "lead",
+)
+
+# ── Pattern fallback prefixes ─────────────────────────────────────────────────
+# Ordered by likelihood of reaching an actual human
+_FALLBACK_PREFIXES = [
+    ("hr",              "HR Department",       "hr"),
+    ("careers",         "Careers Team",        "hr"),
+    ("talent",          "Talent Acquisition",  "hr"),
+    ("recruiting",      "Recruiting Team",     "hr"),
+    ("recruitment",     "Recruitment",         "hr"),
+    ("jobs",            "Jobs Team",           "hr"),
+    ("people",          "People & Culture",    "hr"),
+    ("hiring",          "Hiring Team",         "hr"),
+    ("apply",           "Applications",        "hr"),
+    ("info",            "General Enquiries",   "generic"),
+    ("contact",         "Contact",             "generic"),
+    ("hello",           "General",             "generic"),
 ]
 
 _CONTACT_PATHS = [
@@ -50,6 +77,11 @@ _CONTACT_PATHS = [
     "/people", "/hr", "/",
 ]
 
+# Prefixes we run Hunter Email Verifier on (saves credits vs verifying all)
+_VERIFY_PREFIXES = {"hr", "careers", "talent", "recruiting", "jobs"}
+
+
+# ── Public interface ──────────────────────────────────────────────────────────
 
 async def find_hr_contact(
     company: str,
@@ -57,7 +89,7 @@ async def find_hr_contact(
     company_domain: Optional[str] = None,
     user_id: str = "unknown",
 ) -> dict:
-    """Find HR contact and emit real-time stream events."""
+    """Find HR contacts and emit real-time stream events."""
     from app.core.event_bus import event_bus
 
     await event_bus.emit(user_id, "hr_stream", {
@@ -72,6 +104,7 @@ async def find_hr_contact(
         "company": company,
         "job_title": job_title,
         "email": result.get("hr_email", ""),
+        "total_found": len(result.get("all_recipients", [])),
     })
     return result
 
@@ -81,177 +114,502 @@ async def _find_hr_contact_impl(
     job_title: str,
     company_domain: Optional[str] = None,
 ) -> dict:
-    """Find a real, verified HR contact. Never fabricates."""
+    """Find verified HR contacts. Returns all discovered recipients."""
     from app.config import settings
 
     guessed = company_domain or _guess_domain(company)
     domain = await _resolve_domain(guessed) if guessed else guessed
     api_errors = []
 
-    # ── 1. Free website scraper (no API key needed) ───────────────────────────
+    # Accumulated contacts across all strategies.
+    # Each entry: {email, name, title, role, confidence, source}
+    all_contacts: list[dict] = []
+
+    # ── 1. Hunter.io Domain Search (HR department) ─────────────────────────
+    if settings.HUNTER_API_KEY and domain:
+        try:
+            contacts = await _hunter_domain_search(
+                domain, settings.HUNTER_API_KEY,
+                department="hr", company=company,
+            )
+            all_contacts.extend(contacts)
+            logger.info("hunter_hr_dept", company=company, found=len(contacts))
+        except Exception as e:
+            api_errors.append(f"Hunter HR dept: {e}")
+            logger.warning("hunter_hr_dept_failed", error=str(e))
+
+    # ── 2. Hunter.io Domain Search (Executive + Management depts) ─────────
+    if settings.HUNTER_API_KEY and domain:
+        try:
+            mgmt_contacts = await _hunter_domain_search(
+                domain, settings.HUNTER_API_KEY,
+                department="management", company=company,
+            )
+            exec_contacts = await _hunter_domain_search(
+                domain, settings.HUNTER_API_KEY,
+                department="executive", company=company,
+            )
+            all_contacts.extend(mgmt_contacts)
+            all_contacts.extend(exec_contacts)
+            logger.info(
+                "hunter_exec_mgmt", company=company,
+                found=len(mgmt_contacts) + len(exec_contacts),
+            )
+        except Exception as e:
+            api_errors.append(f"Hunter exec/mgmt: {e}")
+            logger.warning("hunter_exec_failed", error=str(e))
+
+    # ── 3. Hunter.io Domain Search (broad — catch generic company emails) ─
+    if settings.HUNTER_API_KEY and domain and not _has_hr_contact(all_contacts):
+        try:
+            contacts = await _hunter_domain_search(
+                domain, settings.HUNTER_API_KEY,
+                department=None, company=company,
+            )
+            all_contacts.extend(contacts)
+            logger.info("hunter_broad", company=company, found=len(contacts))
+        except Exception as e:
+            api_errors.append(f"Hunter broad: {e}")
+            logger.warning("hunter_broad_failed", error=str(e))
+
+    # ── 4. Company website scraper (FREE) ─────────────────────────────────
     if domain:
         try:
-            result = await _scrape_company_website(company, domain)
-            if result and result.get("hr_email"):
-                result["api_errors"] = api_errors
-                logger.info("hr_found_website_scrape", company=company, email=result["hr_email"])
-                return result
+            scraped = await _scrape_company_website(company, domain)
+            if scraped:
+                all_contacts.append(scraped)
+                logger.info("website_scrape_found", company=company, email=scraped["email"])
         except Exception as e:
             api_errors.append(f"Website scraper: {e}")
             logger.warning("website_scrape_failed", error=str(e))
 
-    # ── 2. Apify Contact Info Scraper (uses existing APIFY_API_KEY) ───────────
-    if settings.APIFY_API_KEY and domain:
+    # ── 5. Apify Contact Scraper ───────────────────────────────────────────
+    if settings.APIFY_API_KEY and domain and not _has_hr_contact(all_contacts):
         try:
-            result = await _apify_contact_scraper(company, domain, settings.APIFY_API_KEY)
-            if result and result.get("hr_email"):
-                result["api_errors"] = api_errors
-                logger.info("hr_found_apify_contact_scraper", company=company, email=result["hr_email"])
-                return result
+            apify_contacts = await _apify_contact_scraper(company, domain, settings.APIFY_API_KEY)
+            all_contacts.extend(apify_contacts)
         except Exception as e:
-            api_errors.append(f"Apify Contact Scraper: {e}")
-            logger.warning("apify_contact_scraper_failed", error=str(e))
+            api_errors.append(f"Apify: {e}")
+            logger.warning("apify_failed", error=str(e))
 
-    # ── 3. Prospeo Search Person + Enrich Person ─────────────────────────────
-    if settings.PROSPEO_API_KEY and domain:
+    # ── 6. Prospeo ─────────────────────────────────────────────────────────
+    if settings.PROSPEO_API_KEY and domain and not _has_hr_contact(all_contacts):
         try:
-            result = await _search_prospeo(company, domain, settings.PROSPEO_API_KEY)
-            if result and result.get("hr_email"):
-                result["api_errors"] = api_errors
-                logger.info("hr_found_prospeo", company=company, email=result["hr_email"])
-                return result
+            p = await _search_prospeo(company, domain, settings.PROSPEO_API_KEY)
+            if p:
+                all_contacts.append(p)
         except Exception as e:
             api_errors.append(f"Prospeo: {e}")
-            logger.warning("prospeo_search_failed", error=str(e))
+            logger.warning("prospeo_failed", error=str(e))
 
-    # ── 4. SerpAPI HR snippet search (direct emails from snippets only) ─────────
-    if settings.SERPAPI_API_KEY and domain:
+    # ── 7. SerpAPI HR snippet search ───────────────────────────────────────
+    if settings.SERPAPI_API_KEY and domain and not _has_hr_contact(all_contacts):
         try:
-            result = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
-            if result and result.get("hr_email"):
-                result["api_errors"] = api_errors
-                logger.info("hr_found_serpapi", company=company, email=result["hr_email"])
-                return result
+            s = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
+            if s:
+                all_contacts.append(s)
         except Exception as e:
-            api_errors.append(f"SerpAPI HR: {e}")
-            logger.warning("serpapi_hr_search_failed", error=str(e))
+            api_errors.append(f"SerpAPI: {e}")
+            logger.warning("serpapi_failed", error=str(e))
 
-    # ── 5. Honest fallback ────────────────────────────────────────────────────
-    careers_url = f"https://{domain}/careers" if domain else ""
-    logger.warning("hr_email_not_found", company=company, domain=domain, errors=api_errors)
+    # ── Deduplicate collected contacts ─────────────────────────────────────
+    all_contacts = _deduplicate(all_contacts)
+
+    # ── 8. Pattern prefix fallback + Hunter Email Verifier ────────────────
+    # Build pattern emails; verify top ones via Hunter when available.
+    # Patterns are always appended last so real contacts sort first.
+    if domain:
+        pattern_contacts = await _build_pattern_fallback(
+            domain,
+            api_key=settings.HUNTER_API_KEY if settings.HUNTER_API_KEY else None,
+        )
+        real_emails = {c["email"].lower() for c in all_contacts}
+        for pc in pattern_contacts:
+            if pc["email"].lower() not in real_emails:
+                all_contacts.append(pc)
+
+    # ── Sort contacts by priority ──────────────────────────────────────────
+    _ROLE_PRIORITY = {"hr": 0, "management": 1, "executive": 2, "generic": 3, "pattern": 4}
+    all_contacts.sort(key=lambda c: (
+        _ROLE_PRIORITY.get(c["role"], 9),
+        -c.get("confidence", 0),
+    ))
+
+    # ── Build final result ─────────────────────────────────────────────────
+    # Pick the primary hr_email (best HR contact, or first contact of any type)
+    primary = next(
+        (c for c in all_contacts if c["role"] == "hr" and c.get("confidence", 0) >= 50),
+        all_contacts[0] if all_contacts else None,
+    )
+
+    if not primary:
+        logger.warning("hr_email_not_found", company=company, domain=domain, errors=api_errors)
+        return {
+            "hr_name": "Hiring Team",
+            "hr_email": "",
+            "hr_title": "HR Department",
+            "hr_linkedin": "",
+            "careers_page": f"https://{domain}/careers" if domain else "",
+            "confidence_score": 0.0,
+            "verified": False,
+            "source": "not_found",
+            "all_recipients": [],
+            "api_errors": api_errors,
+        }
+
+    logger.info(
+        "hr_contacts_found",
+        company=company,
+        primary=primary["email"],
+        total=len(all_contacts),
+    )
     return {
-        "hr_name": "Hiring Team",
-        "hr_email": "",
-        "hr_title": "HR Department",
-        "hr_linkedin": "",
-        "careers_page": careers_url,
-        "confidence_score": 0.0,
-        "verified": False,
-        "source": "not_found",
-        "api_errors": api_errors,
+        "hr_name":         primary.get("name", "HR Team"),
+        "hr_email":        primary["email"],
+        "hr_title":        primary.get("title", primary.get("role", "HR")),
+        "hr_linkedin":     primary.get("linkedin", ""),
+        "confidence_score": primary.get("confidence", 0) / 100,
+        "verified":        primary.get("verified", False),
+        "source":          primary.get("source", "unknown"),
+        "all_recipients":  all_contacts,   # full list for multi-send
+        "api_errors":      api_errors,
     }
 
 
-# ── Strategy 1: Company website scraper (FREE) ────────────────────────────────
+# ── Hunter.io: Domain Search ──────────────────────────────────────────────────
+
+async def _hunter_domain_search(
+    domain: str,
+    api_key: str,
+    department: Optional[str] = None,
+    company: str = "",
+) -> list[dict]:
+    """Call Hunter /domain-search and return scored contact list."""
+    import httpx
+
+    params = {
+        "domain": domain,
+        "api_key": api_key,
+        "limit": 20,
+    }
+    if department:
+        params["department"] = department
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            "https://api.hunter.io/v2/domain-search",
+            params=params,
+        )
+        if resp.status_code == 401:
+            raise ValueError("Hunter API key invalid or quota exhausted")
+        if resp.status_code == 429:
+            raise ValueError("Hunter API rate limit hit")
+        resp.raise_for_status()
+        data = resp.json()
+
+    emails = (data.get("data") or {}).get("emails") or []
+    contacts: list[dict] = []
+
+    for entry in emails:
+        email = (entry.get("value") or "").strip().lower()
+        if not email or "@" not in email:
+            continue
+
+        # Skip obvious noise
+        local = email.split("@")[0]
+        if any(b in local for b in ("noreply", "no-reply", "bounce", "spam", "unsubscribe")):
+            continue
+
+        position = (entry.get("position") or "").lower()
+        seniority = (entry.get("seniority") or "").lower()
+        dept = (entry.get("department") or "").lower()
+        first = entry.get("first_name") or ""
+        last = entry.get("last_name") or ""
+        name = f"{first} {last}".strip() or ""
+        confidence = entry.get("confidence") or 0
+
+        # Verification status from Hunter
+        verification = entry.get("verification") or {}
+        ver_status = (verification.get("status") or "").lower()
+        verified = ver_status in ("valid",)
+
+        # Classify role
+        role = _classify_role(position, dept, seniority, local)
+
+        contacts.append({
+            "email":      email,
+            "name":       name,
+            "title":      entry.get("position") or "",
+            "role":       role,
+            "confidence": confidence,
+            "verified":   verified,
+            "linkedin":   "",
+            "source":     f"hunter_{department or 'broad'}",
+        })
+
+    return contacts
+
+
+# ── Hunter.io: Email Verifier ─────────────────────────────────────────────────
+
+async def _hunter_email_verifier(email: str, api_key: str) -> dict:
+    """Call Hunter /email-verifier for a single address.
+
+    Returns dict: {status, result, score}
+      status: valid | invalid | accept_all | webmail | disposable | unknown
+      result: deliverable | undeliverable | risky
+      score:  0-100
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            "https://api.hunter.io/v2/email-verifier",
+            params={"email": email, "api_key": api_key},
+        )
+        # 202 = still processing; poll once after a short wait
+        if resp.status_code == 202:
+            await asyncio.sleep(6)
+            resp = await client.get(
+                "https://api.hunter.io/v2/email-verifier",
+                params={"email": email, "api_key": api_key},
+            )
+        if resp.status_code not in (200, 202):
+            return {"status": "unknown", "result": "risky", "score": 0}
+
+        d = (resp.json().get("data") or {})
+        return {
+            "status": d.get("status", "unknown"),
+            "result": d.get("result", "risky"),
+            "score":  d.get("score", 0),
+        }
+
+
+async def _hunter_verify_patterns(
+    patterns: list[dict],
+    api_key: str,
+) -> list[dict]:
+    """Run Hunter Email Verifier on priority pattern prefixes.
+
+    Only verifies _VERIFY_PREFIXES (hr@, careers@, …) to conserve credits.
+    Updates confidence / verified fields; drops confirmed-invalid addresses.
+    """
+    to_verify = [
+        p for p in patterns
+        if p["email"].split("@")[0] in _VERIFY_PREFIXES
+    ]
+    if not to_verify:
+        return patterns
+
+    results = await asyncio.gather(
+        *[_hunter_email_verifier(p["email"], api_key) for p in to_verify],
+        return_exceptions=True,
+    )
+
+    # Build a lookup of email → verifier result
+    ver_map: dict[str, dict] = {}
+    for p, r in zip(to_verify, results):
+        if isinstance(r, dict):
+            ver_map[p["email"]] = r
+
+    updated: list[dict] = []
+    for p in patterns:
+        v = ver_map.get(p["email"])
+        if v is None:
+            # Not verified — keep as-is
+            updated.append(p)
+            continue
+
+        status = v["status"]
+        if status == "valid":
+            updated.append({**p, "confidence": 85, "verified": True,
+                             "source": "hunter_verified_pattern"})
+        elif status == "accept_all":
+            # Domain accepts all mail — can't confirm delivery but worth trying
+            updated.append({**p, "confidence": 55, "verified": False,
+                             "source": "hunter_accept_all_pattern"})
+        elif status in ("invalid", "disposable"):
+            # Skip — confirmed undeliverable
+            logger.debug("pattern_invalid_skipped", email=p["email"], status=status)
+        else:
+            # unknown / webmail — keep with original low confidence
+            updated.append(p)
+
+    return updated
+
+
+# ── Pattern prefix fallback ───────────────────────────────────────────────────
+
+async def _build_pattern_fallback(
+    domain: str,
+    api_key: Optional[str] = None,
+) -> list[dict]:
+    """Build and optionally verify pattern-based email addresses.
+
+    When a Hunter API key is provided the top-priority prefixes are verified
+    via /email-verifier.  Confirmed-invalid addresses are dropped; valid ones
+    get confidence 85; accept_all addresses get confidence 55.
+
+    Without an API key a quick MX check is done and all patterns are returned
+    with confidence 30.
+    """
+    # Quick MX check — if domain doesn't accept mail at all, skip
+    if not await _verify_email_domain(f"test@{domain}"):
+        return []
+
+    patterns = []
+    for prefix, label, role in _FALLBACK_PREFIXES:
+        patterns.append({
+            "email":      f"{prefix}@{domain}",
+            "name":       label,
+            "title":      label,
+            "role":       "pattern",
+            "confidence": 30,
+            "verified":   False,
+            "source":     "pattern_fallback",
+        })
+
+    if api_key:
+        try:
+            patterns = await _hunter_verify_patterns(patterns, api_key)
+            logger.info("pattern_fallback_verified", domain=domain,
+                        total=len(patterns))
+        except Exception as e:
+            logger.warning("pattern_verify_failed", error=str(e))
+
+    return patterns
+
+
+# ── Role classifier ───────────────────────────────────────────────────────────
+
+def _classify_role(position: str, dept: str, seniority: str, local: str) -> str:
+    """Classify a Hunter.io contact into hr / management / executive / generic."""
+    pos = position.lower()
+    loc = local.lower()
+
+    # Direct HR role markers
+    if any(kw in pos for kw in ("hr", "human resources", "recruiter", "talent", "hiring",
+                                 "people", "recruitment", "staffing")):
+        return "hr"
+    if dept in ("hr",):
+        return "hr"
+    if any(kw in loc for kw in ("hr", "recruit", "talent", "hiring", "careers", "people")):
+        return "hr"
+
+    # Executive / C-level
+    if any(kw in pos for kw in _EXEC_KEYWORDS):
+        return "executive"
+    if seniority == "executive" and any(kw in pos for kw in ("chief", "ceo", "founder")):
+        return "executive"
+
+    # Management / head of dept
+    if any(kw in pos for kw in _MGMT_KEYWORDS):
+        return "management"
+
+    # Generic mailboxes (info@, contact@, etc.)
+    if loc in ("info", "contact", "hello", "general", "admin", "team"):
+        return "generic"
+
+    # Default: treat executive-seniority as management
+    if seniority == "executive":
+        return "management"
+
+    return "generic"
+
+
+def _has_hr_contact(contacts: list[dict]) -> bool:
+    """Return True if we already have at least one confirmed HR contact."""
+    return any(c["role"] == "hr" and c.get("confidence", 0) >= 40 for c in contacts)
+
+
+def _deduplicate(contacts: list[dict]) -> list[dict]:
+    """Remove duplicate emails, keeping the entry with highest confidence."""
+    seen: dict[str, dict] = {}
+    for c in contacts:
+        key = c["email"].lower()
+        if key not in seen or c.get("confidence", 0) > seen[key].get("confidence", 0):
+            seen[key] = c
+    return list(seen.values())
+
+
+# ── Strategy: Company website scraper (FREE) ─────────────────────────────────
 
 async def _scrape_company_website(company: str, domain: str) -> Optional[dict]:
-    """Scrape the company's own website pages for HR/contact emails."""
     import httpx
     from bs4 import BeautifulSoup
 
     EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
-    found_emails: list[tuple[int, str]] = []
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-
     BLOCKED = {
         "noreply", "no-reply", "admin@", "sales@", "marketing@",
         "press@", "media@", "legal@", "privacy@", "security@",
         "abuse@", "spam@", "unsubscribe@", "bounce@",
     }
+    headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36"}
+    found: list[tuple[int, str]] = []
 
     async with httpx.AsyncClient(timeout=10, follow_redirects=True, headers=headers) as client:
         for base in [f"https://{domain}", f"https://www.{domain}"]:
             for path in _CONTACT_PATHS:
-                url = f"{base}{path}"
                 try:
-                    resp = await client.get(url)
+                    resp = await client.get(f"{base}{path}")
                     if resp.status_code != 200:
                         continue
-
                     final_domain = resp.url.host.lstrip("www.")
                     soup = BeautifulSoup(resp.text, "html.parser")
                     page_text = soup.get_text(" ", strip=True).lower()
-
-                    raw_emails = EMAIL_RE.findall(resp.text)
-                    for email in set(raw_emails):
-                        email_lower = email.lower()
-                        local_part = email_lower.split("@")[0]
-
-                        if any(b in email_lower for b in BLOCKED):
+                    for email in set(EMAIL_RE.findall(resp.text)):
+                        el = email.lower()
+                        local = el.split("@")[0]
+                        email_domain = el.split("@")[1] if "@" in el else ""
+                        if any(b in el for b in BLOCKED):
                             continue
-
-                        email_domain = email_lower.split("@")[1] if "@" in email_lower else ""
                         if email_domain != final_domain and email_domain != domain:
                             continue
-
                         score = 0
-                        email_pos = page_text.find(email_lower)
-                        context = page_text[max(0, email_pos - 200): email_pos + 200] if email_pos >= 0 else ""
+                        pos = page_text.find(el)
+                        ctx = page_text[max(0, pos - 200):pos + 200] if pos >= 0 else ""
                         for kw in _HR_KEYWORDS:
-                            if kw in context:
+                            if kw in ctx:
                                 score += 3
-                        for kw in ("hr", "recruit", "talent", "hiring", "people", "career", "job"):
-                            if kw in local_part:
+                        for kw in ("hr", "recruit", "talent", "hiring", "people", "career"):
+                            if kw in local:
                                 score += 5
-                        if local_part in ("info", "contact", "hello", "team"):
+                        if local in ("info", "contact", "hello", "team"):
                             score = max(score, 1)
-
-                        found_emails.append((score, email))
-
+                        found.append((score, el))
                 except Exception:
                     continue
-
-            if found_emails:
+            if found:
                 break
 
-    if not found_emails:
+    if not found:
         return None
 
-    found_emails.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_email = found_emails[0]
-
+    found.sort(reverse=True)
+    best_score, best_email = found[0]
     if best_score < 0:
         return None
 
+    local = best_email.split("@")[0]
+    role = _classify_role("", "", "", local)
     verified = await _verify_email_domain(best_email)
+
     return {
-        "hr_name": "HR Team",
-        "hr_email": best_email,
-        "hr_title": "HR / Recruiter",
-        "hr_linkedin": "",
-        "confidence_score": min(0.5 + best_score * 0.05, 0.95),
-        "source": "website_scrape",
-        "verified": verified,
+        "email":      best_email,
+        "name":       "HR Team",
+        "title":      "HR / Recruiter",
+        "role":       role,
+        "confidence": min(50 + best_score * 5, 85),
+        "verified":   verified,
+        "source":     "website_scrape",
     }
 
 
-# ── Strategy 2: Apify Contact Info Scraper ───────────────────────────────────
+# ── Strategy: Apify Contact Info Scraper ─────────────────────────────────────
 
-async def _apify_contact_scraper(company: str, domain: str, api_key: str) -> Optional[dict]:
-    """Use Apify's vdrmota/contact-info-scraper actor to extract emails from company pages.
-    FREE with any Apify account — uses APIFY_API_KEY.
-    Actor: https://apify.com/vdrmota/contact-info-scraper
-    """
+async def _apify_contact_scraper(company: str, domain: str, api_key: str) -> list[dict]:
     import httpx
 
-    # Pages most likely to have HR contact info
     start_urls = [
         {"url": f"https://{domain}/contact"},
         {"url": f"https://{domain}/about"},
@@ -259,427 +617,165 @@ async def _apify_contact_scraper(company: str, domain: str, api_key: str) -> Opt
         {"url": f"https://{domain}/team"},
         {"url": f"https://{domain}"},
     ]
-
     actor_url = (
         "https://api.apify.com/v2/acts/vdrmota~contact-info-scraper/run-sync-get-dataset-items"
         f"?token={api_key}&timeout=60&memory=256"
     )
-
-    EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
-    BLOCKED = {"noreply", "no-reply", "admin", "sales", "marketing", "press", "legal", "privacy", "security", "abuse", "spam"}
+    BLOCKED = {"noreply", "no-reply", "admin", "sales", "marketing", "press", "legal", "privacy"}
+    contacts = []
 
     async with httpx.AsyncClient(timeout=90) as client:
-        resp = await client.post(
-            actor_url,
-            json={
-                "startUrls": start_urls,
-                "maxDepth": 1,
-                "maxPageCount": 5,
-                "proxy": {"useApifyProxy": True},
-            },
-        )
+        resp = await client.post(actor_url, json={
+            "startUrls": start_urls, "maxDepth": 1, "maxPageCount": 5,
+            "proxy": {"useApifyProxy": True},
+        })
         resp.raise_for_status()
         items = resp.json()
 
-    found_emails: list[tuple[int, str]] = []
-
     for item in items:
-        # Contact Info Scraper returns emails in item.emails array
-        emails_found = item.get("emails") or []
-        page_url = item.get("url", "")
-
-        for email_entry in emails_found:
-            # Can be string or dict {"email": "...", "name": "..."}
-            if isinstance(email_entry, str):
-                email = email_entry
-            elif isinstance(email_entry, dict):
-                email = email_entry.get("email") or email_entry.get("value") or ""
-            else:
-                continue
-
-            email = email.strip().lower()
+        for email_entry in (item.get("emails") or []):
+            email = (email_entry if isinstance(email_entry, str)
+                     else email_entry.get("email") or "").strip().lower()
             if not email or "@" not in email:
                 continue
-
             local = email.split("@")[0]
             email_domain = email.split("@")[1]
-
-            # Must be from company domain
             if domain not in email_domain and email_domain not in domain:
                 continue
-
             if any(b in local for b in BLOCKED):
                 continue
+            score = sum(5 for kw in ("hr", "recruit", "talent", "hiring", "people", "career")
+                        if kw in local)
+            role = _classify_role("", "", "", local)
+            contacts.append({
+                "email": email, "name": "HR Team", "title": "HR / Recruiter",
+                "role": role, "confidence": min(50 + score * 5, 80),
+                "verified": False, "source": "apify",
+            })
 
-            score = 0
-            for kw in ("hr", "recruit", "talent", "hiring", "people", "career", "job"):
-                if kw in local:
-                    score += 5
-            if local in ("info", "contact", "hello", "team"):
-                score = max(score, 1)
-
-            found_emails.append((score, email))
-
-    if not found_emails:
-        return None
-
-    found_emails.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_email = found_emails[0]
-
-    if best_score < 0:
-        return None
-
-    verified = await _verify_email_domain(best_email)
-    return {
-        "hr_name": "HR Team",
-        "hr_email": best_email,
-        "hr_title": "HR / Recruiter",
-        "hr_linkedin": "",
-        "confidence_score": min(0.5 + best_score * 0.05, 0.92),
-        "source": "apify_contact_scraper",
-        "verified": verified,
-    }
+    return contacts
 
 
-# ── Strategy 3: Prospeo Search Person + Enrich Person ────────────────────────
+# ── Strategy: Prospeo Search + Enrich ────────────────────────────────────────
 
 async def _search_prospeo(company: str, domain: str, api_key: str) -> Optional[dict]:
-    """Use Prospeo Search Person + Enrich Person APIs to find a verified HR email.
-
-    Guards against non-existent / stale emails with three layers:
-      A) Only accept Prospeo status == "VERIFIED" (not UNVERIFIED or RISKY)
-      B) Email domain must belong to the searched company domain
-      C) MX record check confirms the domain actually receives mail
-
-    Docs:
-      https://prospeo.io/api-docs/search-person
-      https://prospeo.io/api-docs/enrich-person
-    """
     import httpx
 
-    _headers = {
-        "X-KEY": api_key,
-        "Content-Type": "application/json",
-    }
-
-    # Strip 'www.' so domain matching works for both forms
+    headers = {"X-KEY": api_key, "Content-Type": "application/json"}
     bare_domain = domain.lstrip("www.")
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        # ── Step 1: search for HR people at this company domain ──────────────
-        # Include senior HR roles first — they are more likely to have verified
-        # emails in Prospeo's DB.  A second pass without seniority runs if needed.
-        for search_payload in [
-            {
-                "page": 1,
-                "filters": {
-                    "company": {"websites": {"include": [bare_domain]}},
-                    "person_department": {"include": ["Human Resources"]},
-                    "person_seniority": {
-                        "include": ["Manager", "Director", "Head", "Vice President", "Senior"]
-                    },
-                },
-            },
-            {
-                "page": 1,
-                "filters": {
-                    "company": {"websites": {"include": [bare_domain]}},
-                    "person_department": {"include": ["Human Resources"]},
-                },
-            },
-        ]:
+    for search_payload in [
+        {"page": 1, "filters": {
+            "company": {"websites": {"include": [bare_domain]}},
+            "person_department": {"include": ["Human Resources"]},
+            "person_seniority": {"include": ["Manager", "Director", "Head", "Vice President", "Senior"]},
+        }},
+        {"page": 1, "filters": {
+            "company": {"websites": {"include": [bare_domain]}},
+            "person_department": {"include": ["Human Resources"]},
+        }},
+    ]:
+        async with httpx.AsyncClient(timeout=30) as client:
             try:
-                resp = await client.post(
-                    "https://api.prospeo.io/search-person",
-                    headers=_headers,
-                    json=search_payload,
-                )
+                resp = await client.post("https://api.prospeo.io/search-person",
+                                         headers=headers, json=search_payload)
                 resp.raise_for_status()
                 search_data = resp.json()
             except Exception as e:
-                logger.debug("prospeo_search_request_failed", domain=bare_domain, error=str(e))
+                logger.debug("prospeo_search_failed", error=str(e))
                 return None
 
             if search_data.get("error") or not search_data.get("results"):
-                continue  # try broader search next
+                continue
 
-            results = search_data["results"]
-
-            # ── Step 2: enrich top 5 candidates ─────────────────────────────
-            for result in results[:5]:
+            for result in search_data["results"][:5]:
                 person = result.get("person", {})
                 person_id = person.get("person_id")
                 if not person_id:
                     continue
-
                 try:
                     enrich_resp = await client.post(
                         "https://api.prospeo.io/enrich-person",
-                        headers=_headers,
-                        json={
-                            "only_verified_email": True,
-                            "data": {"person_id": person_id},
-                        },
+                        headers=headers,
+                        json={"only_verified_email": True, "data": {"person_id": person_id}},
                     )
-                    enrich_resp.raise_for_status()
                     enrich_data = enrich_resp.json()
-                except Exception as e:
-                    logger.debug("prospeo_enrich_request_failed", person_id=person_id, error=str(e))
-                    continue
-
-                if enrich_data.get("error"):
+                except Exception:
                     continue
 
                 ep = enrich_data.get("person", {})
                 email_obj = ep.get("email", {})
                 email = (email_obj.get("email") or "").strip().lower()
-                email_status = email_obj.get("status", "")
-                email_revealed = email_obj.get("revealed", False)
-
-                # ── Guard A: must be revealed (no masking asterisks) ─────────
-                if not email_revealed or not email or "@" not in email or "*" in email:
+                if (not email or "@" not in email or "*" in email
+                        or email_obj.get("status") != "VERIFIED"
+                        or not email_obj.get("revealed")):
                     continue
-
-                # ── Guard B: Prospeo status must be VERIFIED ─────────────────
-                if email_status != "VERIFIED":
-                    logger.debug(
-                        "prospeo_skip_unverified",
-                        email=email, status=email_status,
-                    )
-                    continue
-
-                # ── Guard C: email domain must belong to the target company ──
                 email_domain = email.split("@", 1)[1].lstrip("www.")
                 if bare_domain not in email_domain and email_domain not in bare_domain:
-                    logger.debug(
-                        "prospeo_skip_domain_mismatch",
-                        email_domain=email_domain, expected=bare_domain,
-                    )
                     continue
-
-                # ── Guard D: MX record confirms domain accepts mail ───────────
                 if not await _verify_email_domain(email):
-                    logger.debug("prospeo_skip_no_mx", email=email)
                     continue
 
-                full_name = (
-                    ep.get("full_name")
-                    or f"{ep.get('first_name', '')} {ep.get('last_name', '')}".strip()
-                    or "HR Professional"
-                )
-                job_title = ep.get("current_job_title") or "HR Professional"
-                linkedin = ep.get("linkedin_url") or ""
-
-                logger.info(
-                    "prospeo_email_verified",
-                    company=company, domain=bare_domain,
-                    email=email, title=job_title,
-                )
+                full_name = (ep.get("full_name") or
+                             f"{ep.get('first_name','')} {ep.get('last_name','')}".strip() or
+                             "HR Professional")
                 return {
-                    "hr_name": full_name,
-                    "hr_email": email,
-                    "hr_title": job_title,
-                    "hr_linkedin": linkedin,
-                    "confidence_score": 0.95,
+                    "email": email, "name": full_name,
+                    "title": ep.get("current_job_title") or "HR Professional",
+                    "role": "hr", "confidence": 95, "verified": True,
+                    "linkedin": ep.get("linkedin_url") or "",
                     "source": "prospeo",
-                    "verified": True,
                 }
-
     return None
 
 
-# ── Strategy 4: Common HR inbox probing + email-format.com (zero cost) ───────
-
-# Standard HR inbox prefixes ordered by likelihood
-_HR_PREFIXES = [
-    "hr", "careers", "talent", "recruiting", "recruitment",
-    "jobs", "people", "hiring", "humanresources", "staffing",
-    "talentacquisition", "hrteam", "hiringteam", "apply",
-]
-
-
-async def _lookup_email_format(domain: str) -> Optional[str]:
-    """Scrape email-format.com to get the exact email pattern a company uses.
-    e.g. '{first}.{last}@company.com' or '{first}@company.com'.
-    Completely free — no API key, no signup, no rate limit.
-    """
-    import httpx
-    from bs4 import BeautifulSoup
-
-    try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(
-                f"https://www.email-format.com/d/{domain}/",
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"},
-            )
-            if resp.status_code != 200:
-                return None
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            # email-format.com shows the pattern in a <span class="format"> or similar
-            for tag in soup.find_all(["span", "td", "div", "li"]):
-                text = tag.get_text(strip=True)
-                # Look for placeholder pattern like {first}.{last}@domain.com
-                match = re.search(
-                    r'\{[a-z]+\}(?:[._]\{[a-z]+\})*@' + re.escape(domain),
-                    text, re.IGNORECASE
-                )
-                if match:
-                    return match.group(0).lower()
-
-            # Fallback: look for a real email from the domain in the page and infer format
-            email_re = re.compile(r'([a-zA-Z0-9._%+\-]+)@' + re.escape(domain))
-            sample_emails = email_re.findall(resp.text)
-            if sample_emails:
-                # Use first real email to infer the format
-                parts = sample_emails[0].lower().split(".")
-                if len(parts) >= 2:
-                    return "{first}.{last}@" + domain
-                return "{first}@" + domain
-
-    except Exception:
-        pass
-    return None
-
-
-def _apply_format(pattern: str, first: str, last: str) -> str:
-    """Apply an email-format.com pattern to a real name."""
-    f = first[0] if first else ""
-    l = last[0] if last else ""
-    return (
-        pattern
-        .replace("{first}", first)
-        .replace("{last}", last)
-        .replace("{f}", f)
-        .replace("{l}", l)
-        .replace("{firstlast}", first + last)
-        .replace("{first_last}", first + "_" + last)
-    )
-
-
-async def _probe_common_hr_emails(company: str, domain: str) -> Optional[dict]:
-    """Try standard HR inbox addresses (hr@, careers@, talent@, etc.) with MX verification.
-    Also fetches the company's email format from email-format.com to make
-    pattern-based construction accurate.
-    Completely free — no API key, no external service charges.
-    """
-    # First verify the domain even accepts email (MX check)
-    if not await _verify_email_domain(f"test@{domain}"):
-        return None
-
-    # Try all standard HR prefixes
-    for prefix in _HR_PREFIXES:
-        candidate = f"{prefix}@{domain}"
-        # MX check already passed; accept any prefix that doesn't 404 the domain
-        verified = await _verify_email_domain(candidate)
-        if verified:
-            return {
-                "hr_name": "Hiring Team",
-                "hr_email": candidate,
-                "hr_title": "HR Department",
-                "hr_linkedin": "",
-                "confidence_score": 0.80,
-                "source": "hr_inbox_probe",
-                "verified": True,
-            }
-
-    return None
-
-
-# ── Strategy 5: SerpAPI Google HR search + email construction ─────────────────
+# ── Strategy: SerpAPI HR search (snippet emails only) ────────────────────────
 
 async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Optional[dict]:
-    """Use SerpAPI to search Google for HR/recruiter contacts at the company.
-    Searches multiple queries to find a person's name, then constructs and
-    verifies the email using common corporate email patterns.
-    Uses the existing SERPAPI_API_KEY — no new credentials needed.
-    """
     import httpx
 
     EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
     company_clean = _norm_company(company)
-
-    # Try to find a direct email first, then fall back to name-based construction
-    search_queries = [
+    queries = [
         f'"{company}" recruiter OR "talent acquisition" OR "HR manager" email',
         f'site:{domain} recruiter OR HR OR talent email',
         f'"{company_clean}" recruiter LinkedIn',
     ]
 
-    found_name = ""
-    found_direct_email = ""
-
     async with httpx.AsyncClient(timeout=20) as client:
-        for query in search_queries:
+        for query in queries:
             try:
-                resp = await client.get(
-                    "https://serpapi.com/search",
-                    params={
-                        "engine": "google",
-                        "q": query,
-                        "api_key": serpapi_key,
-                        "num": 5,
-                        "no_cache": "true",
-                    },
-                )
+                resp = await client.get("https://serpapi.com/search", params={
+                    "engine": "google", "q": query,
+                    "api_key": serpapi_key, "num": 5, "no_cache": "true",
+                })
                 resp.raise_for_status()
                 data = resp.json()
-
-                # Scan organic results for direct emails and/or names
                 for result in data.get("organic_results", []):
-                    snippet = (result.get("snippet") or "").lower()
-                    title = (result.get("title") or "").lower()
-                    combined = f"{title} {snippet}"
-
-                    # Look for direct emails in snippet
-                    raw_text = f"{result.get('title', '')} {result.get('snippet', '')}"
+                    raw_text = f"{result.get('title','')} {result.get('snippet','')}"
                     for email in EMAIL_RE.findall(raw_text):
                         email = email.lower()
                         if "@" not in email:
                             continue
                         email_domain = email.split("@")[1]
-                        # Accept only emails matching company domain
-                        if domain in email_domain or email_domain in domain:
-                            local = email.split("@")[0]
-                            if not any(b in local for b in ("noreply", "no-reply", "admin", "sales", "marketing", "press", "legal", "privacy", "security")):
-                                found_direct_email = email
-                                break
-
-                    if found_direct_email:
-                        break
-
-                    # Extract HR person's name if no direct email found
-                    if not found_name and any(kw in combined for kw in _HR_KEYWORDS):
-                        # Try to extract a name from the title (e.g. "Jane Smith - Recruiter at Acme Corp")
-                        title_raw = result.get("title", "")
-                        name_match = re.match(r"^([A-Z][a-z]+ [A-Z][a-z]+)", title_raw)
-                        if name_match:
-                            candidate_name = name_match.group(1)
-                            # Verify it looks like a person name (not a company name)
-                            if not any(noise in candidate_name.lower() for noise in ("jobs", "careers", "hiring", "talent", "team")):
-                                found_name = candidate_name
-
-                if found_direct_email:
-                    break
-
+                        if domain not in email_domain and email_domain not in domain:
+                            continue
+                        local = email.split("@")[0]
+                        if any(b in local for b in ("noreply", "no-reply", "admin",
+                                                     "sales", "legal", "privacy")):
+                            continue
+                        verified = await _verify_email_domain(email)
+                        role = _classify_role("", "", "", local)
+                        return {
+                            "email": email, "name": "HR Team",
+                            "title": "HR / Recruiter",
+                            "role": role,
+                            "confidence": 75 if verified else 55,
+                            "verified": verified,
+                            "source": "serpapi",
+                        }
             except Exception as e:
-                logger.debug("serpapi_hr_query_failed", query=query[:60], error=str(e))
-                continue
-
-    # Only return emails explicitly found in search snippets — never construct/guess
-    if found_direct_email:
-        verified = await _verify_email_domain(found_direct_email)
-        return {
-            "hr_name": "HR Team",
-            "hr_email": found_direct_email,
-            "hr_title": "HR / Recruiter",
-            "hr_linkedin": "",
-            "confidence_score": 0.75 if verified else 0.55,
-            "source": "serpapi_search",
-            "verified": verified,
-        }
-
+                logger.debug("serpapi_hr_failed", query=query[:60], error=str(e))
     return None
 
 
@@ -688,18 +784,12 @@ async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Opt
 async def batch_find_hr_contacts(jobs: list) -> list:
     """Run HR email lookup for all jobs concurrently.
 
-    Returns ALL jobs annotated with:
-      '_hr_contact': dict  — HR contact data if a verified email was found, else absent
-      'hr_found': bool     — True if a verified HR email was found
-
-    Args:
-        jobs: List of job dicts (must contain at least 'company' and 'title').
-
-    Returns:
-        Full list with 'hr_found' flag on each job.
+    Annotates each job with:
+      _hr_contact: dict  — full HR contact data (includes all_recipients list)
+      hr_found: bool     — True if any real email found
     """
     async def _lookup(job_data: dict) -> dict:
-        job_data = dict(job_data)  # don't mutate original
+        job_data = dict(job_data)
         try:
             result = await find_hr_contact(
                 company=job_data.get("company", ""),
@@ -717,9 +807,7 @@ async def batch_find_hr_contacts(jobs: list) -> list:
         return job_data
 
     results = await asyncio.gather(*[_lookup(j) for j in jobs], return_exceptions=True)
-
-    all_jobs = []
-    verified = 0
+    all_jobs, verified = [], 0
     for r in results:
         if isinstance(r, Exception):
             logger.warning("batch_hr_gather_error", error=str(r))
@@ -732,26 +820,7 @@ async def batch_find_hr_contacts(jobs: list) -> list:
     return all_jobs
 
 
-# ── Email construction + DNS verification ────────────────────────────────────
-
-async def _construct_and_verify_email(name: str, domain: str) -> Optional[str]:
-    """Build candidate emails from a real name + known domain.
-    Only returns if MX check passes.
-    """
-    parts = name.lower().split()
-    if len(parts) >= 2:
-        first, last = parts[0], parts[-1]
-        f = first[0] if first else ""
-    else:
-        first = parts[0] if parts else ""
-        last, f = "", first[0] if first else ""
-
-    for pattern in _EMAIL_PATTERNS:
-        candidate = pattern.format(first=first, last=last, f=f, domain=domain)
-        if "@" in candidate and await _verify_email_domain(candidate):
-            return candidate
-    return None
-
+# ── DNS / MX verification ─────────────────────────────────────────────────────
 
 async def _verify_email_domain(email: str) -> bool:
     """Check domain has valid MX records."""
@@ -783,7 +852,7 @@ async def _socket_domain_check(domain: str) -> bool:
         return False
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Domain helpers ────────────────────────────────────────────────────────────
 
 _COMPANY_NOISE = re.compile(
     r"\b(inc|llc|ltd|limited|corp|co|group|holdings|technologies|tech|solutions)\b\.?",
@@ -801,7 +870,7 @@ def _guess_domain(company: str) -> str:
 
 
 async def _resolve_domain(domain: str) -> str:
-    """Follow HTTP redirect to find the real domain (e.g. company.com → company.ai)."""
+    """Follow HTTP redirect to find the real domain."""
     try:
         import httpx
         async with httpx.AsyncClient(timeout=8, follow_redirects=True) as c:

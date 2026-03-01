@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:apify.com)",
+      "WebSearch",
+      "Bash(python:*)",
+      "Bash(npx tsc:*)",
+      "WebFetch(domain:aria-your-ai-agent.lovable.app)",
+      "Bash(ls not:*)",
+      "Bash(vercel:*)",
+      "Bash(railway:*)",
+      "Bash(npx vercel:*)",
+      "Bash(__NEW_LINE_e4cbee1c379f5486__ curl:*)",
+      "Bash(__NEW_LINE_cc406e7371c7c56d__ curl:*)",
+      "Bash(curl:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}

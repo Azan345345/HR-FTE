@@ -177,6 +177,7 @@ class HRContact(Base):
     confidence_score = Column(Float, default=None)
     source = Column(String(100), default=None)
     verified = Column(Boolean, default=False)
+    additional_emails = Column(JSON, default=list)   # all recipients beyond primary hr_email
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

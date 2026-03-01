@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   CheckCircle, RefreshCw, Edit3, ChevronDown, ChevronUp,
   Target, Zap, Save, Plus, Trash2, X, AlertTriangle,
@@ -48,7 +48,8 @@ interface CVReviewMeta {
   application_id: string;
   tailored_cv_id?: string;
   job_id?: string;
-  job: { title: string; company: string };
+  auto_open_edit?: boolean;
+  job: { id?: string; title: string; company: string; location?: string };
   tailored_cv: TailoredCVPreview;
   ats_score?: number;
   match_score?: number;
@@ -192,6 +193,11 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const aiInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Auto-open edit dialog when triggered from "Edit in Modal" button ──────
+  useEffect(() => {
+    if (metadata.auto_open_edit) setEditOpen(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── AI change tracking ─────────────────────────────────────────────────────
   const [aiChanges, setAiChanges] = useState<AiChanges>({
@@ -458,27 +464,31 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
         </div>
       </div>
 
-      {/* Score bar */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 flex-wrap">
-        <ScorePill label="ATS" value={Math.round(ats_score)} color="bg-emerald-50 border-emerald-200 text-emerald-700" />
-        <ScorePill label="Match" value={Math.round(match_score)} color="bg-rose-50 border-rose-200 text-rose-700" />
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-blue-50 border-blue-200 text-blue-700">
-          <Target size={11} />
-          <span className="text-[11px] font-medium font-sans">{keywords_matched}/{keywords_total} keywords</span>
-        </div>
-      </div>
+      {/* Score bar — hidden for general CV edits (no job context) */}
+      {job.id !== "" && (
+        <>
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 flex-wrap">
+            <ScorePill label="ATS" value={Math.round(ats_score)} color="bg-emerald-50 border-emerald-200 text-emerald-700" />
+            <ScorePill label="Match" value={Math.round(match_score)} color="bg-rose-50 border-rose-200 text-rose-700" />
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-blue-50 border-blue-200 text-blue-700">
+              <Target size={11} />
+              <span className="text-[11px] font-medium font-sans">{keywords_matched}/{keywords_total} keywords</span>
+            </div>
+          </div>
 
-      {/* Score breakdown */}
-      {score_breakdown && Object.keys(score_breakdown).length > 0 && (
-        <div className="px-4 py-3 border-b border-slate-100 space-y-1.5">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2 font-sans flex items-center gap-1">
-            <BarChart3 size={9} /> Score Breakdown
-          </p>
-          <MiniScoreBar label="Skills" value={score_breakdown.skills_score || 0} max={35} color="bg-violet-400" />
-          <MiniScoreBar label="Experience" value={score_breakdown.experience_score || 0} max={25} color="bg-blue-400" />
-          <MiniScoreBar label="Education" value={score_breakdown.education_score || 0} max={15} color="bg-emerald-400" />
-          <MiniScoreBar label="Projects" value={score_breakdown.projects_score || 0} max={15} color="bg-amber-400" />
-        </div>
+          {/* Score breakdown */}
+          {score_breakdown && Object.keys(score_breakdown).length > 0 && (
+            <div className="px-4 py-3 border-b border-slate-100 space-y-1.5">
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2 font-sans flex items-center gap-1">
+                <BarChart3 size={9} /> Score Breakdown
+              </p>
+              <MiniScoreBar label="Skills" value={score_breakdown.skills_score || 0} max={35} color="bg-violet-400" />
+              <MiniScoreBar label="Experience" value={score_breakdown.experience_score || 0} max={25} color="bg-blue-400" />
+              <MiniScoreBar label="Education" value={score_breakdown.education_score || 0} max={15} color="bg-emerald-400" />
+              <MiniScoreBar label="Projects" value={score_breakdown.projects_score || 0} max={15} color="bg-amber-400" />
+            </div>
+          )}
+        </>
       )}
 
       {/* ── Live AI Diff Panel ───────────────────────────────────────────────── */}

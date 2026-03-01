@@ -210,3 +210,118 @@ async def send_via_gmail(
             }
         logger.error("gmail_send_error", error=err_str, exc_info=True)
         return {"message_id": None, "status": "failed", "error": err_str}
+
+
+async def send_to_all_recipients(
+    user_tokens: dict,
+    hr_contact_result: dict,
+    email_subject: str,
+    email_body: str,
+    attachment_path: Optional[str] = None,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_filename: str = "Tailored_CV.pdf",
+) -> dict:
+    """Send the application email to every discovered contact.
+
+    Strategy:
+      - Real contacts (hr / management / executive / generic, non-pattern):
+          Send to ALL of them, regardless of whether HR was found.
+      - Pattern fallbacks: only used when zero real contacts exist;
+          sends to those with confidence >= 55 (verified or accept_all), max 3.
+
+    Each recipient gets a personalised greeting using their name when available.
+
+    Returns:
+        {
+            "sent":   [{"email", "name", "role", "message_id", "status"}],
+            "failed": [{"email", "name", "role", "error"}],
+            "total_sent": int,
+        }
+    """
+    all_recipients: list[dict] = hr_contact_result.get("all_recipients", [])
+
+    # ── Decide who gets the email ──────────────────────────────────────────
+    real = [r for r in all_recipients if r.get("role") != "pattern"]
+    patterns = [r for r in all_recipients if r.get("role") == "pattern"]
+
+    if real:
+        targets = real
+        logger.info("multi_send_real_contacts", count=len(targets))
+    else:
+        # No real contacts found — fall back to verified/accept_all patterns only
+        targets = [p for p in patterns if p.get("confidence", 0) >= 55][:3]
+        logger.info("multi_send_pattern_fallback", count=len(targets))
+
+    if not targets:
+        return {"sent": [], "failed": [], "total_sent": 0}
+
+    sent: list[dict] = []
+    failed: list[dict] = []
+
+    for recipient in targets:
+        to_email = recipient.get("email", "")
+        if not to_email:
+            continue
+
+        # Personalise greeting
+        name = recipient.get("name", "").strip()
+        role = recipient.get("role", "generic")
+        if name:
+            personalised_body = email_body.replace(
+                "Dear Hiring Manager",
+                f"Dear {name.split()[0]}",
+            ).replace(
+                "Dear HR Team",
+                f"Dear {name.split()[0]}",
+            )
+        else:
+            role_greeting = {
+                "hr": "Dear HR Team",
+                "management": "Dear Hiring Manager",
+                "executive": "Dear Sir/Madam",
+                "generic": "Dear Hiring Team",
+                "pattern": "Dear Hiring Team",
+            }.get(role, "Dear Hiring Team")
+            personalised_body = email_body.replace(
+                "Dear Hiring Manager", role_greeting
+            ).replace(
+                "Dear HR Team", role_greeting
+            )
+
+        result = await send_via_gmail(
+            user_tokens=user_tokens,
+            to_email=to_email,
+            subject=email_subject,
+            body=personalised_body,
+            attachment_path=attachment_path,
+            attachment_bytes=attachment_bytes,
+            attachment_filename=attachment_filename,
+        )
+
+        entry = {
+            "email": to_email,
+            "name": name or recipient.get("title", ""),
+            "role": role,
+            "source": recipient.get("source", "unknown"),
+        }
+        if result.get("status") == "sent":
+            entry["message_id"] = result.get("message_id")
+            entry["status"] = "sent"
+            sent.append(entry)
+            logger.info("multi_send_ok", email=to_email, role=role)
+        else:
+            entry["error"] = result.get("error", "unknown error")
+            entry["status"] = "failed"
+            failed.append(entry)
+            logger.warning("multi_send_failed", email=to_email, error=entry["error"])
+
+    logger.info(
+        "multi_send_complete",
+        total_sent=len(sent),
+        total_failed=len(failed),
+    )
+    return {
+        "sent":       sent,
+        "failed":     failed,
+        "total_sent": len(sent),
+    }

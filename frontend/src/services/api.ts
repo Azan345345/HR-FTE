@@ -263,29 +263,14 @@ export function getIntegrationStatus() {
 }
 
 export function getGoogleAuthUrl() {
-    return api<{ auth_url: string }>("/integrations/google/auth-url", { token: getToken() });
+    return api<{ auth_url: string | null; redirect_uri: string; error?: string }>("/integrations/google/auth-url", { token: getToken() });
 }
 
-export function exchangeGoogleCode(code: string) {
-    return api<{ status: string }>(`/integrations/google/callback?code=${encodeURIComponent(code)}`, {
-        method: "POST",
+export function disconnectGoogle() {
+    return api<{ status: string }>("/integrations/google", {
+        method: "DELETE",
         token: getToken(),
     });
-}
-
-export function saveGoogleCredentials(client_id: string, client_secret: string) {
-    return api<{ status: string }>("/integrations/google/credentials", {
-        method: "POST",
-        token: getToken(),
-        body: JSON.stringify({ client_id, client_secret }),
-    });
-}
-
-export function getGoogleCredentials() {
-    return api<{ client_id: string; has_secret: boolean; configured: boolean }>(
-        "/integrations/google/credentials",
-        { token: getToken() }
-    );
 }
 
 // ── Settings Service ─────────────────────────

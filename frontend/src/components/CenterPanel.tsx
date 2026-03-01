@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
   Pencil, Sparkles, Search, FileText, Mail, Zap, Bot, Loader2, CheckCircle2, GitMerge,
+  Briefcase, Brain, ChevronRight,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -424,6 +425,75 @@ const SUGGESTIONS = [
   },
 ];
 
+// ── Slash Commands ─────────────────────────────────────────────────────────────
+interface SlashCommand {
+  name: string;
+  label: string;
+  description: string;
+  icon: React.ElementType;
+  action: "fill" | "send";
+  template: string; // for "fill": text placed in input; for "send": text sent immediately
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  {
+    name: "search",
+    label: "Search for jobs",
+    description: "Find matching job listings",
+    icon: Search,
+    action: "fill",
+    template: "Search for jobs as ",
+  },
+  {
+    name: "improve",
+    label: "Improve my CV",
+    description: "Get AI suggestions to strengthen your CV",
+    icon: Sparkles,
+    action: "send",
+    template: "Improve my CV",
+  },
+  {
+    name: "tailor",
+    label: "Tailor CV for a job",
+    description: "Customize your CV for a specific role",
+    icon: FileText,
+    action: "fill",
+    template: "Tailor my CV for this job:\n",
+  },
+  {
+    name: "hr",
+    label: "Find HR email",
+    description: "Locate HR contact for a company",
+    icon: Mail,
+    action: "fill",
+    template: "Find HR email for ",
+  },
+  {
+    name: "interview",
+    label: "Interview prep",
+    description: "Practice questions & salary research",
+    icon: Brain,
+    action: "fill",
+    template: "Help me prepare for an interview at ",
+  },
+  {
+    name: "apply",
+    label: "Full auto-apply pipeline",
+    description: "Search, tailor & apply to top matches automatically",
+    icon: Briefcase,
+    action: "send",
+    template: "Search for jobs and automatically apply to the best matches",
+  },
+  {
+    name: "analyze",
+    label: "Analyze my CV",
+    description: "Detailed strengths, gaps & quick wins",
+    icon: Zap,
+    action: "send",
+    template: "Analyze my CV and tell me what's strong and what needs improvement",
+  },
+];
+
 interface CenterPanelProps {
   activeSessionId: string | null;
   onSessionCreated: (id: string) => void;
@@ -435,6 +505,11 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+
+  // Slash command menu state
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -560,6 +635,36 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       ]);
     } finally {
       setIsSending(false);
+    }
+  };
+
+  // ── Slash command helpers ─────────────────────────────────────────────────
+  const filteredCommands = slashQuery
+    ? SLASH_COMMANDS.filter(
+        (c) =>
+          c.name.startsWith(slashQuery.toLowerCase()) ||
+          c.label.toLowerCase().includes(slashQuery.toLowerCase())
+      )
+    : SLASH_COMMANDS;
+
+  const selectSlashCommand = (cmd: SlashCommand) => {
+    setSlashMenuOpen(false);
+    setSlashQuery("");
+    setSlashIndex(0);
+    if (cmd.action === "send") {
+      handleSend(cmd.template);
+      setInputValue("");
+    } else {
+      setInputValue(cmd.template);
+      setTimeout(() => {
+        if (inputRef.current) {
+          inputRef.current.focus();
+          inputRef.current.setSelectionRange(cmd.template.length, cmd.template.length);
+          inputRef.current.style.height = "auto";
+          inputRef.current.style.height =
+            Math.min(inputRef.current.scrollHeight, 160) + "px";
+        }
+      }, 0);
     }
   };
 
@@ -770,6 +875,57 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
       {/* Input Area */}
       <div className="px-5 py-4 border-t border-black/[0.05] bg-white/98 backdrop-blur-sm flex-shrink-0">
+
+        {/* Slash command popover — rendered above input */}
+        <AnimatePresence>
+          {slashMenuOpen && filteredCommands.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ duration: 0.15 }}
+              className="mb-2 w-full bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden"
+            >
+              <div className="px-3 pt-2.5 pb-1">
+                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Commands</p>
+              </div>
+              {filteredCommands.map((cmd, i) => {
+                const Icon = cmd.icon;
+                return (
+                  <button
+                    key={cmd.name}
+                    onMouseDown={(e) => { e.preventDefault(); selectSlashCommand(cmd); }}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                      i === slashIndex
+                        ? "bg-violet-50 text-violet-900"
+                        : "hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                      i === slashIndex ? "bg-violet-100" : "bg-slate-100"
+                    }`}>
+                      <Icon size={13} className={i === slashIndex ? "text-violet-600" : "text-slate-500"} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] font-semibold leading-none mb-0.5">
+                        <span className="text-slate-400 font-mono">/</span>{cmd.name}
+                        <span className="ml-2 font-normal text-slate-500">{cmd.label}</span>
+                      </p>
+                      <p className="text-[10px] text-slate-400 truncate">{cmd.description}</p>
+                    </div>
+                    <ChevronRight size={12} className={i === slashIndex ? "text-violet-400" : "text-slate-300"} />
+                  </button>
+                );
+              })}
+              <div className="px-3 py-1.5 border-t border-slate-100 flex items-center gap-3">
+                <span className="text-[9px] text-slate-400">↑↓ navigate</span>
+                <span className="text-[9px] text-slate-400">↵ select</span>
+                <span className="text-[9px] text-slate-400">Esc dismiss</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div
           className="relative w-full bg-white rounded-2xl transition-all duration-200 focus-within:ring-[3px] focus-within:ring-primary/10"
           style={{ border: "1px solid rgba(0,0,0,0.09)", boxShadow: "var(--shadow-card)" }}
@@ -779,19 +935,51 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             rows={1}
             value={inputValue}
             onChange={(e) => {
-              setInputValue(e.target.value);
+              const val = e.target.value;
+              setInputValue(val);
+              // Slash menu trigger — only when "/" is the first character
+              if (val.startsWith("/")) {
+                setSlashQuery(val.slice(1));
+                setSlashMenuOpen(true);
+                setSlashIndex(0);
+              } else {
+                setSlashMenuOpen(false);
+                setSlashQuery("");
+              }
               // auto-resize
               e.target.style.height = "auto";
               e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
             }}
             onKeyDown={(e) => {
+              if (slashMenuOpen && filteredCommands.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashIndex((i) => (i + 1) % filteredCommands.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
+                  return;
+                }
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  selectSlashCommand(filteredCommands[slashIndex]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashMenuOpen(false);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 handleSend();
               }
             }}
             disabled={isSending}
-            placeholder="Message CareerAgent… (Enter to send, Shift+Enter for newline)"
+            placeholder="Message CareerAgent… (/ for commands, Enter to send)"
             className="w-full px-5 pt-3.5 pb-12 bg-transparent text-[13px] text-foreground placeholder:text-slate-400 outline-none resize-none leading-relaxed disabled:opacity-50 max-h-40"
             style={{ minHeight: "52px" }}
           />

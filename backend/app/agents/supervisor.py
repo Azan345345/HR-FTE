@@ -2040,9 +2040,14 @@ async def _handle_prep_interview(
 async def _handle_edit_cv(
     user_id: str, tailored_cv_id: str, json_str: str, db: AsyncSession
 ) -> Tuple[str, Optional[dict]]:
-    """Persist user-edited CV sections to the TailoredCV record."""
+    """Persist user-edited CV sections to the TailoredCV record.
+
+    When called with empty/no edits (i.e. the "Edit in Modal" button was clicked),
+    returns a cv_review card with auto_open_edit=True so the frontend opens the
+    edit dialog immediately.
+    """
     from sqlalchemy import select
-    from app.db.models import TailoredCV
+    from app.db.models import TailoredCV, UserCV
 
     result = await db.execute(
         select(TailoredCV).where(TailoredCV.id == tailored_cv_id, TailoredCV.user_id == user_id)
@@ -2052,11 +2057,61 @@ async def _handle_edit_cv(
         return ("Could not find the CV to save changes.", None)
 
     try:
-        edits = json.loads(json_str) if json_str else {}
+        edits = json.loads(json_str) if json_str.strip() not in ("{}", "") else {}
     except Exception:
         return ("Invalid CV edit data received.", None)
 
-    # Merge edits into existing tailored_data
+    # Empty edits → open the edit modal client-side by returning cv_review metadata
+    if not edits:
+        td = tailored_cv.tailored_data or {}
+
+        # Try to fetch user's personal info for contact string
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+        )
+        user_cv = cv_result.scalar_one_or_none()
+        personal = (user_cv.parsed_data or {}).get("personal_info", {}) if user_cv else {}
+        contact_parts = [v for v in [
+            personal.get("email", ""), personal.get("phone", ""),
+            personal.get("location", ""), personal.get("linkedin", ""),
+        ] if v]
+        contact_str = " · ".join(contact_parts)
+
+        skills = td.get("skills", {})
+        if isinstance(skills, dict):
+            all_skills = []
+            for v in skills.values():
+                if isinstance(v, list):
+                    all_skills.extend(v)
+            skills_str = ", ".join(all_skills[:20])
+        else:
+            skills_str = str(skills)[:200]
+
+        return ("", {
+            "type": "cv_review",
+            "auto_open_edit": True,
+            "tailored_cv_id": tailored_cv_id,
+            "application_id": tailored_cv_id,
+            "job": {"id": "", "title": "General CV", "company": "", "location": ""},
+            "tailored_cv": {
+                "name": personal.get("name", ""),
+                "contact": contact_str,
+                "summary": td.get("summary", ""),
+                "experience": td.get("experience", []),
+                "skills": skills_str,
+                "skills_raw": td.get("skills", {}),
+                "education": td.get("education", []),
+                "certifications": td.get("certifications", []),
+                "projects": td.get("projects", []),
+            },
+            "ats_score": 0,
+            "match_score": 0,
+            "keywords_matched": 0,
+            "keywords_total": 0,
+            "changes_made": [],
+        })
+
+    # Non-empty edits → merge and save
     current = tailored_cv.tailored_data or {}
     for section, value in edits.items():
         if value is not None:

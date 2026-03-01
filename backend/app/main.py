@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
         ("interview_preps", "coding_challenges",       json_type),
         ("interview_preps", "cultural_questions",      json_type),
         ("interview_preps", "study_plan",              json_type),
+        ("hr_contacts",     "additional_emails",       json_type),
     ]
     for table, column, col_type in new_columns:
         try:

@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     GENERATED_DIR: str = "./generated"
 
+    # --- Backend public URL (used for OAuth redirect_uri) ---
+    BACKEND_URL: str = "http://localhost:8000"
+
     # --- Frontend ---
     FRONTEND_URL: str = "http://localhost:5173"
 

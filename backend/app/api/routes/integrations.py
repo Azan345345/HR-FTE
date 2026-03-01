@@ -1,6 +1,14 @@
-"""Integrations routes — Google OAuth, service connections."""
+"""Integrations routes — Google OAuth, service connections.
 
-from fastapi import APIRouter, Depends, HTTPException
+OAuth flow (backend-callback):
+  GET /integrations/google/auth-url     → returns auth URL (user redirected to Google)
+  GET /integrations/google/callback     → Google redirects here with ?code&state
+                                          backend exchanges code, saves tokens,
+                                          redirects to FRONTEND_URL/?gmail_connected=1
+"""
+
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -9,6 +17,10 @@ from app.db.database import get_db
 from app.db.models import User, UserIntegration
 from app.api.deps import get_current_user
 from app.config import settings
+
+import structlog
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
@@ -19,144 +31,132 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
-
-def _redirect_uri() -> str:
-    return f"{settings.FRONTEND_URL}/settings/google-callback"
-
-
-def _get_user_google_creds(user: User):
-    """Return (client_id, client_secret) from user preferences or env, or raise."""
-    prefs = user.preferences or {}
-    client_id = prefs.get("google_client_id") or settings.GOOGLE_OAUTH_CLIENT_ID
-    client_secret = prefs.get("google_client_secret") or settings.GOOGLE_OAUTH_CLIENT_SECRET
-    if not client_id or not client_secret:
-        raise HTTPException(
-            status_code=400,
-            detail="Google OAuth credentials not configured. Please add your Client ID and Secret in Settings → Integrations.",
-        )
-    return client_id, client_secret
+# The single redirect URI registered in Google Cloud Console
+def _backend_callback_uri() -> str:
+    return f"{settings.BACKEND_URL}/api/integrations/google/callback"
 
 
-# ── Credentials ──────────────────────────────────────────────────────────────
-
-class GoogleCredentialsBody(BaseModel):
-    client_id: str
-    client_secret: str
-
-
-@router.post("/google/credentials")
-async def save_google_credentials(
-    body: GoogleCredentialsBody,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Save user's own Google OAuth Client ID and Client Secret."""
-    from sqlalchemy.orm.attributes import flag_modified
-
-    client_id = body.client_id.strip()
-    client_secret = body.client_secret.strip()
-
-    prefs = dict(current_user.preferences or {})
-    prefs["google_client_id"] = client_id
-    prefs["google_client_secret"] = client_secret
-    current_user.preferences = prefs
-    flag_modified(current_user, "preferences")
-    await db.commit()
-
-    # Also update the live settings object so OAuth works immediately (best-effort)
-    try:
-        object.__setattr__(settings, "GOOGLE_OAUTH_CLIENT_ID", client_id)
-        object.__setattr__(settings, "GOOGLE_OAUTH_CLIENT_SECRET", client_secret)
-    except Exception:
-        pass  # DB save already succeeded; live update is just a convenience
-
-    return {"status": "saved"}
-
-
-@router.get("/google/credentials")
-async def get_google_credentials(
-    current_user: User = Depends(get_current_user),
-):
-    """Return whether user has saved Google credentials (never expose the secret)."""
-    prefs = current_user.preferences or {}
-    client_id = prefs.get("google_client_id", "")
-    has_secret = bool(prefs.get("google_client_secret"))
-    return {
-        "client_id": client_id,
-        "has_secret": has_secret,
-        "configured": bool(client_id and has_secret),
-    }
-
-
-# ── OAuth Flow ────────────────────────────────────────────────────────────────
+# ── Step 1: generate auth URL ─────────────────────────────────────────────────
 
 @router.get("/google/auth-url")
 async def get_google_auth_url(
-    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get Google OAuth2 authorization URL using user credentials or env fallback."""
-    client_id, client_secret = _get_user_google_creds(current_user)
+    """Return the Google OAuth2 authorization URL.
 
-    from app.core.google_auth import get_google_auth_url as build_url
-    url = await build_url(
-        _redirect_uri(),
-        GOOGLE_SCOPES,
-        client_id=client_id,
-        client_secret=client_secret,
+    Encodes the current user's ID in a signed `state` parameter so the
+    backend callback can identify them without needing a session cookie.
+    """
+    from app.core.google_auth import get_google_auth_url as build_url, create_oauth_state
+
+    if not settings.GOOGLE_OAUTH_CLIENT_ID or not settings.GOOGLE_OAUTH_CLIENT_SECRET:
+        logger.error("google_oauth_not_configured")
+        return {"auth_url": None, "error": "Google OAuth credentials not configured on the server."}
+
+    redirect_uri = _backend_callback_uri()
+    state = create_oauth_state(str(current_user.id), settings.SECRET_KEY)
+    auth_url = await build_url(
+        redirect_uri=redirect_uri,
+        scopes=GOOGLE_SCOPES,
+        state=state,
     )
-    return {"auth_url": url}
+    logger.info("google_auth_url_generated", user_id=current_user.id, redirect_uri=redirect_uri)
+    # redirect_uri is returned so the UI can show users exactly what to register
+    # in Google Cloud Console → Credentials → Authorized redirect URIs
+    return {"auth_url": auth_url, "redirect_uri": redirect_uri}
 
 
-@router.post("/google/callback")
-async def google_oauth_callback(
-    code: str,
+# ── Step 2: backend callback (Google redirects here) ─────────────────────────
+
+@router.get("/google/callback")
+async def google_oauth_backend_callback(
+    code: str = Query(None),
+    state: str = Query(None),
+    error: str = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
-    """Exchange Google authorization code for tokens."""
-    client_id, client_secret = _get_user_google_creds(current_user)
+    """Handle Google's OAuth2 redirect.
 
-    from app.core.google_auth import exchange_code_for_tokens
-    tokens = await exchange_code_for_tokens(
-        code,
-        _redirect_uri(),
-        GOOGLE_SCOPES,
-        client_id=client_id,
-        client_secret=client_secret,
-    )
+    This endpoint is called by Google — NO Authorization header is present.
+    User identity is recovered from the signed `state` token.
+    After saving tokens the user is redirected back to the frontend.
+    """
+    from app.core.google_auth import decode_oauth_state, exchange_code_for_tokens
 
-    # Store integration
-    result = await db.execute(
-        select(UserIntegration).where(
-            UserIntegration.user_id == current_user.id,
-            UserIntegration.service_name == "google",
+    frontend = settings.FRONTEND_URL
+
+    # ── Error from Google consent screen ──────────────────────────────────
+    if error:
+        logger.warning("google_oauth_user_denied", error=error)
+        return RedirectResponse(f"{frontend}/?gmail_error={error}", status_code=302)
+
+    if not code or not state:
+        logger.warning("google_oauth_missing_params")
+        return RedirectResponse(f"{frontend}/?gmail_error=missing_params", status_code=302)
+
+    # ── Verify CSRF state & extract user_id ───────────────────────────────
+    try:
+        user_id = decode_oauth_state(state, settings.SECRET_KEY)
+    except ValueError as exc:
+        logger.warning("google_oauth_invalid_state", error=str(exc))
+        return RedirectResponse(f"{frontend}/?gmail_error=invalid_state", status_code=302)
+
+    # ── Load user ─────────────────────────────────────────────────────────
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        logger.error("google_oauth_user_not_found", user_id=user_id)
+        return RedirectResponse(f"{frontend}/?gmail_error=user_not_found", status_code=302)
+
+    # ── Exchange code for tokens ───────────────────────────────────────────
+    try:
+        tokens = await exchange_code_for_tokens(
+            code=code,
+            redirect_uri=_backend_callback_uri(),
+            scopes=GOOGLE_SCOPES,
         )
+    except Exception as exc:
+        logger.error("google_oauth_token_exchange_failed", error=str(exc), user_id=user_id)
+        return RedirectResponse(f"{frontend}/?gmail_error=token_exchange_failed", status_code=302)
+
+    if not tokens.get("refresh_token"):
+        # refresh_token is absent when the user has already granted once.
+        # force revoke + reconnect by returning a helpful error.
+        logger.warning("google_oauth_no_refresh_token", user_id=user_id)
+        return RedirectResponse(f"{frontend}/?gmail_error=no_refresh_token", status_code=302)
+
+    # ── Save / update UserIntegration ─────────────────────────────────────
+    stmt = select(UserIntegration).where(
+        UserIntegration.user_id == user.id,
+        UserIntegration.service_name == "google",
     )
+    result = await db.execute(stmt)
     integration = result.scalar_one_or_none()
 
     if integration:
-        integration.access_token = tokens.get("access_token")
+        integration.access_token  = tokens.get("access_token")
         integration.refresh_token = tokens.get("refresh_token")
-        integration.is_active = True
-        integration.token_expiry = None
+        integration.is_active     = True
     else:
         integration = UserIntegration(
-            user_id=current_user.id,
-            service_name="google",
-            access_token=tokens.get("access_token"),
-            refresh_token=tokens.get("refresh_token"),
-            scopes=GOOGLE_SCOPES,
-            is_active=True,
+            user_id       = user.id,
+            service_name  = "google",
+            access_token  = tokens.get("access_token"),
+            refresh_token = tokens.get("refresh_token"),
+            scopes        = GOOGLE_SCOPES,
+            is_active     = True,
         )
         db.add(integration)
 
-    current_user.google_oauth_token = tokens
-    current_user.google_refresh_token = tokens.get("refresh_token")
-
+    user.google_oauth_token    = tokens
+    user.google_refresh_token  = tokens.get("refresh_token")
     await db.commit()
-    return {"status": "connected"}
 
+    logger.info("google_oauth_connected", user_id=user.id)
+    return RedirectResponse(f"{frontend}/?gmail_connected=1", status_code=302)
+
+
+# ── Integration status ────────────────────────────────────────────────────────
 
 @router.get("/status")
 async def get_integration_status(
@@ -170,9 +170,9 @@ async def get_integration_status(
     integrations = result.scalars().all()
 
     services = {
-        "google_gmail": False,
-        "google_drive": False,
-        "supabase": bool(settings.SUPABASE_URL),
+        "google_gmail":  False,
+        "google_drive":  False,
+        "supabase":      bool(settings.SUPABASE_URL),
         "upstash_redis": bool(settings.UPSTASH_REDIS_URL),
     }
     for i in integrations:
@@ -180,6 +180,7 @@ async def get_integration_status(
             services["google_gmail"] = True
             services["google_drive"] = True
 
+    # Fallback: env-level refresh token counts as connected
     if not services["google_gmail"] and (
         current_user.google_refresh_token or settings.GOOGLE_REFRESH_TOKEN
     ):
@@ -187,6 +188,8 @@ async def get_integration_status(
 
     return {"integrations": services}
 
+
+# ── Disconnect ────────────────────────────────────────────────────────────────
 
 @router.delete("/google")
 async def disconnect_google(
@@ -201,12 +204,12 @@ async def disconnect_google(
         )
     )
     for integration in result.scalars().all():
-        integration.is_active = False
-        integration.access_token = None
+        integration.is_active     = False
+        integration.access_token  = None
         integration.refresh_token = None
 
     current_user.google_refresh_token = None
-    current_user.google_oauth_token = None
-
+    current_user.google_oauth_token   = None
     await db.commit()
+    logger.info("google_oauth_disconnected", user_id=current_user.id)
     return {"status": "disconnected"}

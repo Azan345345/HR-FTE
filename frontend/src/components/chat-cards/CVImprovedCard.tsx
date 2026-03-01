@@ -1,6 +1,7 @@
 import { Download, Edit3, CheckCircle2, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
+import { toast } from "sonner";
 
 interface CVImprovedMeta {
   type: "cv_improved";
@@ -35,7 +36,13 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
       link.click();
       URL.revokeObjectURL(link.href);
     } catch {
-      alert("Could not download the PDF. Please try again.");
+      toast.error("Could not download the PDF. The file may have been lost after a server restart.", {
+        action: {
+          label: "Regenerate",
+          onClick: () => onSendAction("__APPLY_CV_IMPROVEMENTS__"),
+        },
+        duration: 6000,
+      });
     }
   };
 
@@ -83,10 +90,18 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
       </div>
 
       {!has_pdf && (
-        <p className="text-[10px] text-slate-400 font-sans mt-2 text-center">
-          <FileText size={9} className="inline mr-0.5" />
-          PDF generation encountered an issue — editing is still fully available.
-        </p>
+        <div className="mt-2 flex items-center justify-center gap-1.5">
+          <FileText size={9} className="text-amber-400" />
+          <p className="text-[10px] text-slate-400 font-sans">
+            PDF was lost after server restart —{" "}
+            <button
+              className="text-amber-500 hover:text-amber-600 underline font-medium transition-colors"
+              onClick={() => onSendAction("__APPLY_CV_IMPROVEMENTS__")}
+            >
+              click to regenerate
+            </button>
+          </p>
+        </div>
       )}
     </motion.div>
   );
