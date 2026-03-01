@@ -156,7 +156,7 @@ async def process_chat_message(
                 )
 
             elif intent == "cv_analysis":
-                text = await _handle_cv_analysis_request(user_id, db)
+                text = await _handle_cv_analysis_request(user_id, message, llm, db)
                 result = (text, None)
 
             elif intent == "interview_prep":
@@ -2019,52 +2019,124 @@ async def _handle_edit_cv(
 
 # ── Existing Handlers ─────────────────────────────────────────────────────────
 
-async def _handle_cv_analysis_request(user_id: str, db: AsyncSession) -> str:
+async def _handle_cv_analysis_request(user_id: str, message: str, llm, db: AsyncSession) -> str:
     from sqlalchemy import select
     from app.db.models import UserCV
+    from langchain_core.messages import SystemMessage, HumanMessage
 
     cv_result = await db.execute(
         select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
     )
     cv = cv_result.scalar_one_or_none()
     if not cv or not cv.parsed_data:
-        return "I couldn't find your CV. Please upload it first!"
+        return (
+            "I don't see a CV on file yet. Upload your PDF or DOCX using the button in the "
+            "left sidebar and I'll give you a full analysis right away."
+        )
 
-    await event_bus.emit_agent_started(user_id, "cv_parser", "Analyzing CV components")
+    await event_bus.emit_agent_started(user_id, "cv_parser", "Deep-reading your CV")
 
     data = cv.parsed_data
-    personal = data.get("personal_info", {})
-    skills = data.get("skills", {})
-    exp = data.get("experience", [])
-    edu = data.get("education", [])
+    personal = data.get("personal_info", {}) or {}
+    skills = data.get("skills", {}) or {}
+    exp = data.get("experience", []) or []
+    edu = data.get("education", []) or []
+    projects = data.get("projects", []) or []
+    certs = data.get("certifications", []) or []
+    summary = data.get("professional_summary", "") or ""
 
-    lines = [
-        f"📄 **CV Analysis: {personal.get('name', 'Your CV')}**\n",
-        "Here are the key components I've identified:\n",
-        "### 👤 Personal Info",
-        f"- **Email:** {personal.get('email', 'N/A')}",
-        f"- **Location:** {personal.get('location', 'N/A')}",
-        f"- **LinkedIn:** {personal.get('linkedin', 'N/A')}\n",
-        "### 🛠️ Key Skills",
-        f"- **Technical:** {', '.join(skills.get('technical', [])[:8])}",
-        f"- **Soft Skills:** {', '.join(skills.get('soft', [])[:5])}",
-        f"- **Tools:** {', '.join(skills.get('tools', [])[:5])}\n",
-        "### 💼 Experience Highlights",
-    ]
-    for job in exp[:3]:
-        lines.append(f"- **{job.get('role')}** at {job.get('company')} ({job.get('duration')})")
-    if len(exp) > 3:
-        lines.append(f"  *...and {len(exp) - 3} more roles.*")
+    # Build a structured CV snapshot for the LLM
+    cv_block_parts = []
 
-    lines.append("\n### 🎓 Education")
-    for school in edu:
-        lines.append(
-            f"- {school.get('degree')} in {school.get('field')} from {school.get('institution')}"
+    if personal.get("name"):
+        cv_block_parts.append(f"Name: {personal['name']}")
+    if personal.get("location"):
+        cv_block_parts.append(f"Location: {personal['location']}")
+    if personal.get("linkedin"):
+        cv_block_parts.append(f"LinkedIn: {personal['linkedin']}")
+    if summary:
+        cv_block_parts.append(f"\nProfessional Summary:\n{summary[:400]}")
+
+    tech_skills = skills.get("technical", []) or []
+    soft_skills = skills.get("soft", []) or []
+    tools_skills = skills.get("tools", []) or []
+    langs = skills.get("languages", []) or []
+    all_skills = tech_skills + tools_skills
+    if all_skills:
+        cv_block_parts.append(f"\nTechnical Skills: {', '.join(str(s) for s in all_skills[:20])}")
+    if soft_skills:
+        cv_block_parts.append(f"Soft Skills: {', '.join(str(s) for s in soft_skills[:8])}")
+    if langs:
+        cv_block_parts.append(f"Languages: {', '.join(str(s) for s in langs[:5])}")
+
+    if exp:
+        cv_block_parts.append("\nWork Experience:")
+        for job in exp[:6]:
+            role = job.get("role") or job.get("title") or "Role"
+            company = job.get("company", "")
+            duration = job.get("duration") or job.get("period") or ""
+            descs = job.get("descriptions", []) or job.get("bullets", []) or []
+            cv_block_parts.append(f"  • {role} at {company} ({duration})")
+            for d in descs[:3]:
+                cv_block_parts.append(f"    - {str(d)[:120]}")
+
+    if edu:
+        cv_block_parts.append("\nEducation:")
+        for school in edu[:3]:
+            deg = school.get("degree", "")
+            field = school.get("field", "")
+            inst = school.get("institution", "")
+            year = school.get("graduation_year", "")
+            cv_block_parts.append(f"  • {deg} in {field} — {inst} {year}".strip())
+
+    if projects:
+        cv_block_parts.append(f"\nProjects ({len(projects)} listed):")
+        for p in projects[:4]:
+            name = p.get("name", "Project")
+            desc = p.get("description", "")
+            cv_block_parts.append(f"  • {name}: {str(desc)[:100]}")
+
+    if certs:
+        cv_block_parts.append(f"\nCertifications: {', '.join(str(c.get('name', c)) for c in certs[:5])}")
+
+    cv_block = "\n".join(cv_block_parts)
+
+    system_content = (
+        "You are CareerAgent — an elite career strategist and CV expert with deep HR industry knowledge. "
+        "You have just been given a candidate's complete CV data. Your job is to give them honest, "
+        "specific, actionable analysis based on what they asked. "
+        "Avoid generic advice. Reference their actual job titles, companies, skills, and achievements. "
+        "Be direct and insightful — point out real strengths and real weaknesses. "
+        "Use a professional but conversational tone. Format with markdown headers and bullets where helpful. "
+        "Do NOT produce the same template for every request — adapt your response to exactly what they asked."
+    )
+
+    user_content = (
+        f"Here is my CV:\n\n{cv_block}\n\n"
+        f"My question / request: {message}"
+    )
+
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=system_content),
+            HumanMessage(content=user_content),
+        ])
+        analysis = response.content if hasattr(response, "content") else str(response)
+    except Exception as e:
+        logger.error("cv_analysis_llm_error", error=str(e))
+        # Graceful degradation — still better than the old hardcoded template
+        name = personal.get("name", "your profile")
+        analysis = (
+            f"Here's a quick overview of **{name}**'s CV:\n\n"
+            f"**Skills:** {', '.join(str(s) for s in (tech_skills + tools_skills)[:10])}\n\n"
+            f"**Experience:** {len(exp)} role(s) on record — "
+            f"{', '.join(f\"{e.get('role', '')} at {e.get('company', '')}\" for e in exp[:3])}\n\n"
+            f"**Education:** {', '.join(f\"{e.get('degree', '')} from {e.get('institution', '')}\" for e in edu[:2])}\n\n"
+            f"Ask me anything specific about your CV or how to improve it for a target role!"
         )
-    lines.append("\nIs there anything specific you'd like to improve in your profile?")
 
-    await event_bus.emit_agent_completed(user_id, "cv_parser", "Analysis complete")
-    return "\n".join(lines)
+    await event_bus.emit_agent_completed(user_id, "cv_parser", "CV analysis complete")
+    return analysis
 
 
 async def _handle_status_request(user_id: str, db: AsyncSession) -> str:
