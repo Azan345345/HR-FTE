@@ -2126,13 +2126,21 @@ async def _handle_cv_analysis_request(user_id: str, message: str, llm, db: Async
         logger.error("cv_analysis_llm_error", error=str(e))
         # Graceful degradation — still better than the old hardcoded template
         name = personal.get("name", "your profile")
+        skills_str = ", ".join(str(s) for s in (tech_skills + tools_skills)[:10])
+        exp_str = ", ".join(
+            "{} at {}".format(ex.get("role", ""), ex.get("company", ""))
+            for ex in exp[:3]
+        )
+        edu_str = ", ".join(
+            "{} from {}".format(ed.get("degree", ""), ed.get("institution", ""))
+            for ed in edu[:2]
+        )
         analysis = (
             f"Here's a quick overview of **{name}**'s CV:\n\n"
-            f"**Skills:** {', '.join(str(s) for s in (tech_skills + tools_skills)[:10])}\n\n"
-            f"**Experience:** {len(exp)} role(s) on record — "
-            f"{', '.join(f\"{e.get('role', '')} at {e.get('company', '')}\" for e in exp[:3])}\n\n"
-            f"**Education:** {', '.join(f\"{e.get('degree', '')} from {e.get('institution', '')}\" for e in edu[:2])}\n\n"
-            f"Ask me anything specific about your CV or how to improve it for a target role!"
+            f"**Skills:** {skills_str}\n\n"
+            f"**Experience:** {len(exp)} role(s) on record — {exp_str}\n\n"
+            f"**Education:** {edu_str}\n\n"
+            "Ask me anything specific about your CV or how to improve it for a target role!"
         )
 
     await event_bus.emit_agent_completed(user_id, "cv_parser", "CV analysis complete")
