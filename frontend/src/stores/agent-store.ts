@@ -198,7 +198,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
 
     jobStreamUniqueJobs: (jobs) =>
         set((state) => state.jobStream
-            ? { jobStream: { ...state.jobStream, uniqueJobs: jobs } }
+            ? { jobStream: { ...state.jobStream, uniqueJobs: jobs, active: false } }
             : state
         ),
 

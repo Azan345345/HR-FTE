@@ -738,10 +738,10 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           );
         })}
 
-        {/* Live job stream — persists until cleared, independent of loading state */}
-        {jobStream?.active && <LiveJobStreamPanel stream={jobStream} />}
+        {/* Live job stream — persists until a new search starts (startJobStream resets it) */}
+        {jobStream && <LiveJobStreamPanel stream={jobStream} />}
 
-        {/* Generic thinking indicator — only when NOT streaming jobs */}
+        {/* Generic thinking indicator — only when NOT actively streaming jobs */}
         {(isSending || isUploading) && !jobStream?.active && <ThinkingBubble />}
 
         <div ref={chatEndRef} />
