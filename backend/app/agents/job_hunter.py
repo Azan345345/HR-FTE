@@ -70,6 +70,7 @@ async def search_jobs(
     query: str,
     user_id: str = "unknown",
     location: Optional[str] = None,
+    job_type: Optional[str] = None,
     limit: int = 10,
     cv_data: Optional[dict] = None,
 ) -> list[dict]:
@@ -81,13 +82,14 @@ async def search_jobs(
     parse_prompt = f"""Analyze this job search request: "{query}"
 
 Extract:
-1. Clean job title/keywords (without location)
-2. Specific location (City, State, etc.)
+1. Clean job title/keywords (without location or employment type)
+2. Specific location (City, State, country — or null if not mentioned)
 3. Country name
 4. ISO 3166-1 alpha-2 country code (e.g. 'au','us','gb','ca','in','de')
+5. Employment/job type — one of: fulltime, parttime, contract, temporary, internship, remote, hybrid (or null)
 
-Return JSON: {{"title":"...","location":"...","country":"...","country_code":"..."}}
-If no location specified default to "Remote" and null country.
+Return JSON: {{"title":"...","location":"...","country":"...","country_code":"...","job_type":"..."}}
+If no location specified use null. If no job type specified use null.
 Return ONLY JSON."""
 
     try:
@@ -98,6 +100,8 @@ Return ONLY JSON."""
         search_location = location or parsed.get("location")
         country_code = (parsed.get("country_code") or "us").lower()
         country_name = parsed.get("country")
+        # Caller-supplied job_type wins; fall back to LLM-extracted value
+        job_type = _normalize_job_type(job_type) or _normalize_job_type(parsed.get("job_type"))
 
         # Quick city/country → ISO code mapping (supplements LLM extraction)
         if search_location:
@@ -147,6 +151,7 @@ Return ONLY JSON."""
         search_location = location
         country_code = "us"
         country_name = None
+        job_type = _normalize_job_type(job_type)
 
     all_jobs: list[dict] = []
     sources_tried: list[str] = []
@@ -158,7 +163,7 @@ Return ONLY JSON."""
                 user_id, "job_hunter", 1, 4, "Searching Indeed via Apify"
             )
             apify_jobs = await _search_apify_indeed(
-                search_title, search_location, limit, country_code
+                search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(apify_jobs)
             sources_tried.append("indeed")
@@ -173,7 +178,7 @@ Return ONLY JSON."""
                 user_id, "job_hunter", 1, 4, "Searching LinkedIn via Apify"
             )
             linkedin_jobs = await _search_apify_linkedin(
-                search_title, search_location, limit, country_code
+                search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(linkedin_jobs)
             sources_tried.append("linkedin")
@@ -189,7 +194,7 @@ Return ONLY JSON."""
                 f"Searching Google Jobs ({country_name or 'Global'})"
             )
             serpapi_jobs = await _search_serpapi(
-                search_title, search_location, limit, country_code
+                search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(serpapi_jobs)
             sources_tried.append("google_jobs")
@@ -204,7 +209,7 @@ Return ONLY JSON."""
                 user_id, "job_hunter", 3, 4, "Searching RapidAPI JSearch"
             )
             jsearch_jobs = await _search_jsearch(
-                search_title, search_location, limit, country_code
+                search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(jsearch_jobs)
             sources_tried.append("jsearch")
@@ -250,7 +255,8 @@ def _deduplicate(jobs: list[dict]) -> list[dict]:
 # ── Apify Indeed Job Search ───────────────────────────────────────────────────
 
 async def _search_apify_indeed(
-    query: str, location: Optional[str], limit: int, country_code: str = "us"
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
 ) -> list[dict]:
     """Search Indeed jobs via Apify's official indeed-scraper actor."""
     import httpx
@@ -263,16 +269,26 @@ async def _search_apify_indeed(
         f"?token={settings.APIFY_API_KEY}&timeout=120&memory=1024"
     )
 
-    payload = {
+    # Map canonical job_type → Indeed's jobType values
+    _indeed_job_type = {
+        "fulltime": "fulltime", "parttime": "parttime",
+        "contract": "contract", "temporary": "temporary", "internship": "internship",
+    }
+    search_location = location or ""
+    payload: dict = {
         "position": query,
         "country": indeed_country,
-        "location": location or "",
+        "location": search_location,
         "maxItems": min(limit * 2, 20),
         "parseCompanyDetails": False,
         "saveOnlyUniqueItems": True,
         "followApplyRedirects": False,
         "fromage": 14,  # only jobs posted in the last 14 days
     }
+    if job_type == "remote":
+        payload["remoteness"] = "1"  # Indeed's remote filter
+    elif job_type in _indeed_job_type:
+        payload["jobType"] = _indeed_job_type[job_type]
 
     async with httpx.AsyncClient(timeout=150) as client:
         response = await client.post(url, json=payload)
@@ -308,20 +324,30 @@ async def _search_apify_indeed(
 # ── Apify LinkedIn Job Search ─────────────────────────────────────────────────
 
 async def _search_apify_linkedin(
-    query: str, location: Optional[str], limit: int, country_code: str = "us"
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
 ) -> list[dict]:
     """Search LinkedIn jobs via fantastic-jobs/advanced-linkedin-job-search-api actor.
 
     Input schema:
       titleSearch    – array of title keywords (AND-matched within each item)
       locationSearch – array of location strings in 'City, Region, Country' format
+      workTypes      – array of employment type strings
       count          – max jobs to return (up to 5000)
     """
     import httpx
 
+    # Map canonical job_type → LinkedIn work type labels
+    _li_work_type = {
+        "fulltime": "Full-time", "parttime": "Part-time",
+        "contract": "Contract", "temporary": "Temporary", "internship": "Internship",
+    }
+
     # Build location strings: actor requires full English names, no abbreviations
     location_terms: list[str] = []
-    if location:
+    if job_type == "remote":
+        location_terms.append("Remote")
+    elif location:
         location_terms.append(location)
 
     url = (
@@ -335,6 +361,8 @@ async def _search_apify_linkedin(
     }
     if location_terms:
         payload["locationSearch"] = location_terms
+    if job_type in _li_work_type:
+        payload["workTypes"] = [_li_work_type[job_type]]
 
     async with httpx.AsyncClient(timeout=150) as client:
         response = await client.post(url, json=payload)
@@ -434,10 +462,38 @@ def _guess_domain(company: str) -> str:
     return f"{clean}.com" if clean else ""
 
 
+# ── Job type normalisation ─────────────────────────────────────────────────────
+
+_JOB_TYPE_ALIASES: dict[str, str] = {
+    # Full-time
+    "full-time": "fulltime", "full time": "fulltime", "fulltime": "fulltime", "ft": "fulltime",
+    # Part-time
+    "part-time": "parttime", "part time": "parttime", "parttime": "parttime", "pt": "parttime",
+    # Contract / Freelance
+    "contract": "contract", "contractor": "contract", "freelance": "contract", "consulting": "contract",
+    # Temporary
+    "temporary": "temporary", "temp": "temporary",
+    # Internship
+    "internship": "internship", "intern": "internship",
+    # Remote
+    "remote": "remote", "work from home": "remote", "wfh": "remote", "fully remote": "remote",
+    # Hybrid
+    "hybrid": "hybrid",
+}
+
+
+def _normalize_job_type(job_type: Optional[str]) -> Optional[str]:
+    """Map user-facing job type string to a canonical internal value."""
+    if not job_type:
+        return None
+    return _JOB_TYPE_ALIASES.get(job_type.lower().strip())
+
+
 # ── SerpAPI Google Jobs ───────────────────────────────────────────────────────
 
 async def _search_serpapi(
-    query: str, location: Optional[str], limit: int, country_code: str = "us"
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
 ) -> list[dict]:
     from serpapi import GoogleSearch
 
@@ -449,7 +505,23 @@ async def _search_serpapi(
         "ch": "google.ch", "at": "google.at", "es": "google.es",
         "it": "google.it", "pl": "google.pl", "sg": "google.com.sg",
     }
+
+    # Map canonical job_type → Google Jobs employment_type chip values
+    _serp_employment = {
+        "fulltime": "FULLTIME", "parttime": "PARTTIME",
+        "contract": "CONTRACTOR", "internship": "INTERN",
+    }
+
     search_q = f"{query} {location}".strip() if location else query
+    # Build chips — always include freshness filter
+    chips_parts = ["date:r,604800"]  # posted in last 7 days
+    if job_type == "remote":
+        search_q = f"{query} remote".strip()
+    elif job_type == "hybrid":
+        search_q = f"{query} hybrid".strip()
+    elif job_type in _serp_employment:
+        chips_parts.append(f"employment_type:{_serp_employment[job_type]}")
+
     params = {
         "engine": "google_jobs",
         "q": search_q,
@@ -458,7 +530,7 @@ async def _search_serpapi(
         "gl": country_code,
         "hl": "en",
         "google_domain": domains.get(country_code, "google.com"),
-        "chips": "date:r,604800",  # jobs posted in the last 7 days
+        "chips": ",".join(chips_parts),
         "no_cache": "true",        # always fetch fresh results, bypass SerpAPI cache
     }
 
@@ -489,9 +561,28 @@ async def _search_serpapi(
 # ── RapidAPI JSearch ──────────────────────────────────────────────────────────
 
 async def _search_jsearch(
-    query: str, location: Optional[str], limit: int, country_code: str = "us"
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
 ) -> list[dict]:
     import httpx
+
+    # Map canonical job_type → JSearch employment_types values
+    _jsearch_type = {
+        "fulltime": "FULLTIME", "parttime": "PARTTIME",
+        "contract": "CONTRACTOR", "temporary": "CONTRACTOR",
+        "internship": "INTERN",
+    }
+
+    jsearch_params: dict = {
+        "query": f"{query} {location or ''}".strip(),
+        "num_pages": "1",
+        "country": country_code,
+        "date_posted": "week",  # only jobs from the past week
+    }
+    if job_type == "remote":
+        jsearch_params["remote_jobs_only"] = "true"
+    elif job_type in _jsearch_type:
+        jsearch_params["employment_types"] = _jsearch_type[job_type]
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -500,12 +591,7 @@ async def _search_jsearch(
                 "X-RapidAPI-Key": settings.RAPIDAPI_KEY,
                 "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
             },
-            params={
-                "query": f"{query} {location or ''}".strip(),
-                "num_pages": "1",
-                "country": country_code,
-                "date_posted": "week",  # only jobs from the past week
-            },
+            params=jsearch_params,
             timeout=30,
         )
         response.raise_for_status()

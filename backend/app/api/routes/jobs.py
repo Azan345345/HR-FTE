@@ -52,6 +52,7 @@ async def search_jobs(
         jobs_data = await agent_search(
             query=body.query,
             location=body.location,
+            job_type=body.job_type,
             limit=body.limit,
             cv_data=primary_cv.parsed_data if primary_cv else None,
         )

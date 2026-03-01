@@ -388,7 +388,12 @@ async def _handle_job_search_v2(
     prompt = f"""Extract job search parameters from this message:
 "{message}"
 
-Return JSON: {{"query": "job title/role", "location": "city/country or null"}}
+Return JSON:
+{{
+  "query": "job title/role only — no location or employment type",
+  "location": "city, region or country — or null",
+  "job_type": "one of: fulltime, parttime, contract, temporary, internship, remote, hybrid — or null"
+}}
 Return ONLY valid JSON."""
 
     try:
@@ -402,10 +407,11 @@ Return ONLY valid JSON."""
             content = content.strip()
         params = json.loads(content)
     except Exception:
-        params = {"query": message, "location": None}
+        params = {"query": message, "location": None, "job_type": None}
 
     search_query = params.get("query", message) or message
     location = params.get("location")
+    job_type = params.get("job_type")
 
     await event_bus.emit_agent_progress(user_id, "job_hunter", 1, 3, f"Searching for: {search_query}", location or "any location")
 
@@ -427,6 +433,7 @@ Return ONLY valid JSON."""
         query=search_query,
         user_id=user_id,
         location=location,
+        job_type=job_type,
         limit=limit,
         cv_data=cv_parsed_data,
     )
