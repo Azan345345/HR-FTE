@@ -197,6 +197,7 @@ def _to_response(app: Application) -> ApplicationResponse:
     return ApplicationResponse(
         id=app.id,
         job_id=app.job_id,
+        tailored_cv_id=app.tailored_cv_id,
         status=app.status,
         email_subject=app.email_subject,
         email_body=app.email_body,

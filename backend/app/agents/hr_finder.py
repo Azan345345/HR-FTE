@@ -6,13 +6,15 @@ Strategy order (stops at first real result):
   3. Prospeo Search + Enrich Person  — PROSPEO_API_KEY required
                                        Searches 200M+ contacts by company domain + HR dept
                                        Enriches top results for verified emails
-  4. Common HR inbox probing         — FREE, no API key
-                                       Tries hr@/careers@/talent@/recruiting@/people@
-                                       with MX + email-format.com pattern detection
-  5. SerpAPI HR people search        — FREE with existing SERPAPI_API_KEY
-                                       Searches Google, extracts name, constructs email
-                                       using email-format.com pattern for accuracy
-  6. Honest fallback                 — never fabricates an email
+  4. SerpAPI HR snippet search       — FREE with existing SERPAPI_API_KEY
+                                       Extracts emails found directly in Google snippets ONLY
+                                       Never constructs/guesses emails from names
+  5. Honest fallback                 — never fabricates an email
+
+NOTE: MX record verification only confirms a domain accepts mail — it cannot verify
+that a specific mailbox (hr@company.com) exists. Any strategy that constructs emails
+from names or common prefixes and "verifies" them via MX will produce false positives.
+Only emails explicitly found in page text or API responses are returned.
 """
 
 import re
@@ -97,19 +99,7 @@ async def find_hr_contact(
             api_errors.append(f"Prospeo: {e}")
             logger.warning("prospeo_search_failed", error=str(e))
 
-    # ── 4. Common HR inbox probing + email-format.com pattern (zero cost) ───────
-    if domain:
-        try:
-            result = await _probe_common_hr_emails(company, domain)
-            if result and result.get("hr_email"):
-                result["api_errors"] = api_errors
-                logger.info("hr_found_probe", company=company, email=result["hr_email"])
-                return result
-        except Exception as e:
-            api_errors.append(f"HR probe: {e}")
-            logger.warning("hr_probe_failed", error=str(e))
-
-    # ── 5. SerpAPI HR people search + email construction ─────────────────────
+    # ── 4. SerpAPI HR snippet search (direct emails from snippets only) ─────────
     if settings.SERPAPI_API_KEY and domain:
         try:
             result = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
@@ -121,7 +111,7 @@ async def find_hr_contact(
             api_errors.append(f"SerpAPI HR: {e}")
             logger.warning("serpapi_hr_search_failed", error=str(e))
 
-    # ── 6. Honest fallback ────────────────────────────────────────────────────
+    # ── 5. Honest fallback ────────────────────────────────────────────────────
     careers_url = f"https://{domain}/careers" if domain else ""
     logger.warning("hr_email_not_found", company=company, domain=domain, errors=api_errors)
     return {
@@ -652,7 +642,7 @@ async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Opt
                 logger.debug("serpapi_hr_query_failed", query=query[:60], error=str(e))
                 continue
 
-    # Return direct email if found
+    # Only return emails explicitly found in search snippets — never construct/guess
     if found_direct_email:
         verified = await _verify_email_domain(found_direct_email)
         return {
@@ -664,40 +654,6 @@ async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Opt
             "source": "serpapi_search",
             "verified": verified,
         }
-
-    # Fall back to name-based email construction
-    if found_name and domain:
-        parts = found_name.lower().split()
-        if len(parts) >= 2:
-            first, last = parts[0], parts[-1]
-
-            # Try email-format.com first for the exact company pattern
-            fmt = await _lookup_email_format(domain)
-            if fmt and "{" in fmt:
-                candidate = _apply_format(fmt, first, last)
-                if await _verify_email_domain(candidate):
-                    return {
-                        "hr_name": found_name,
-                        "hr_email": candidate,
-                        "hr_title": "Recruiter",
-                        "hr_linkedin": "",
-                        "confidence_score": 0.80,
-                        "source": "serpapi+email_format",
-                        "verified": True,
-                    }
-
-            # Fall back to generic pattern list
-            constructed = await _construct_and_verify_email(found_name, domain)
-            if constructed:
-                return {
-                    "hr_name": found_name,
-                    "hr_email": constructed,
-                    "hr_title": "Recruiter",
-                    "hr_linkedin": "",
-                    "confidence_score": 0.65,
-                    "source": "serpapi_constructed",
-                    "verified": True,
-                }
 
     return None
 

@@ -101,6 +101,7 @@ class ApplicationApproveRequest(BaseModel):
 class ApplicationResponse(BaseModel):
     id: str
     job_id: str
+    tailored_cv_id: Optional[str] = None
     status: str
     email_subject: Optional[str] = None
     email_body: Optional[str] = None
