@@ -13,6 +13,7 @@ import { CVReviewCard } from "./chat-cards/CVReviewCard";
 import { EmailReviewCard } from "./chat-cards/EmailReviewCard";
 import { ApplicationSentCard } from "./chat-cards/ApplicationSentCard";
 import { InterviewPrepCard } from "./chat-cards/InterviewPrepCard";
+import { CVSelectionCard } from "./chat-cards/CVSelectionCard";
 
 interface ChatMessage {
   id: string;
@@ -437,6 +438,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       case "email_review":    return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} />;
       case "application_sent":return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} />;
       case "interview_ready": return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
+      case "cv_selection":    return <CVSelectionCard metadata={meta as any} onSendAction={sendAction} />;
       default: return null;
     }
   }

@@ -40,6 +40,10 @@ export function deleteCV(cvId: string) {
     return api<void>(`/cv/${cvId}`, { method: "DELETE", token: getToken() });
 }
 
+export function setPrimaryCV(cvId: string) {
+    return api<any>(`/cv/${cvId}/set-primary`, { method: "PATCH", token: getToken() });
+}
+
 export function tailorCV(jobId: string, cvId?: string) {
     return api<any>("/cv/tailor", {
         method: "POST",

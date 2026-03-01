@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { X, Eye, EyeOff, ShieldCheck, Database, Zap, User, Plus, Trash2, FileText, CheckCircle2, Brain, Sparkles, BookOpen, Link, Linkedin } from "lucide-react";
-import { getSettingsConfig, listCVs, uploadCV, deleteCV, getSkills, getGoogleAuthUrl, getProfile, saveProfile } from "@/services/api";
+import { X, Eye, EyeOff, ShieldCheck, Database, Zap, User, Plus, Trash2, FileText, CheckCircle2, Star, Brain, Sparkles, BookOpen, Link, Linkedin } from "lucide-react";
+import { getSettingsConfig, listCVs, uploadCV, deleteCV, setPrimaryCV, getSkills, getGoogleAuthUrl, getProfile, saveProfile } from "@/services/api";
 import { useAuthStore } from "@/hooks/useAuth";
 
 interface SettingsModalProps {
@@ -21,6 +21,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [cvs, setCvs] = useState<any[]>([]);
   const [cvLoading, setCvLoading] = useState(false);
   const [uploadingCv, setUploadingCv] = useState(false);
+  const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
   const [skills, setSkills] = useState<any>(null);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [connectingGmail, setConnectingGmail] = useState(false);
@@ -100,12 +101,24 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   };
 
   const handleCVDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this CV?")) return;
+    if (!confirm("Delete this CV? This will also remove all tailored versions and generated PDFs linked to it.")) return;
     try {
       await deleteCV(id);
       await fetchCVs();
     } catch (err) {
       console.error("Delete failed:", err);
+    }
+  };
+
+  const handleSetPrimary = async (id: string) => {
+    try {
+      setSettingPrimary(id);
+      await setPrimaryCV(id);
+      await fetchCVs();
+    } catch (err) {
+      console.error("Set primary failed:", err);
+    } finally {
+      setSettingPrimary(null);
     }
   };
 
@@ -328,10 +341,20 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                                 </div>
                               </div>
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {!cv.is_primary && (
+                                  <button
+                                    onClick={() => handleSetPrimary(cv.id)}
+                                    disabled={settingPrimary === cv.id}
+                                    className="p-1.5 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded-lg transition-all disabled:opacity-50"
+                                    title="Set as primary CV"
+                                  >
+                                    <Star size={14} />
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => handleCVDelete(cv.id)}
                                   className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                                  title="Delete CV"
+                                  title="Delete CV permanently"
                                 >
                                   <Trash2 size={14} />
                                 </button>

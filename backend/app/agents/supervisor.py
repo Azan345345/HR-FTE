@@ -104,6 +104,30 @@ async def process_chat_message(
             cv_id, _, json_str = rest.partition(":")
             result = await _handle_edit_cv(user_id, cv_id.strip(), json_str.strip(), db)
 
+        elif message.startswith("__SELECT_CV__:"):
+            # Format: __SELECT_CV__:{cv_id}:{pending_intent}:{pending_context}
+            rest = message[len("__SELECT_CV__:"):].strip()
+            parts = rest.split(":", 2)
+            if len(parts) == 3:
+                sel_cv_id, pending_intent, pending_context = parts
+                if pending_intent == "job_search":
+                    import base64 as _b64
+                    try:
+                        original_msg = _b64.urlsafe_b64decode(pending_context.encode()).decode()
+                    except Exception:
+                        original_msg = pending_context
+                    result = await _handle_job_search_v2(
+                        user_id, session_id, original_msg, db, selected_cv_id=sel_cv_id.strip()
+                    )
+                elif pending_intent == "tailor":
+                    result = await _handle_tailor_apply(
+                        user_id, pending_context.strip(), db, selected_cv_id=sel_cv_id.strip()
+                    )
+                else:
+                    result = ("Unrecognised pending action after CV selection.", None)
+            else:
+                result = ("Invalid CV selection format.", None)
+
         else:
             # ── Load conversation history for context-aware responses ─────────
             history = await _load_conversation_history(user_id, session_id, db, limit=25)
@@ -249,15 +273,89 @@ Return ONLY the intent label, one word."""
         return "general"
 
 
+# ── Multi-CV selection helper ─────────────────────────────────────────────────
+
+async def _maybe_ask_cv_selection(
+    user_id: str,
+    db: AsyncSession,
+    pending_intent: str,
+    pending_context: str,
+    selected_cv_id: Optional[str],
+) -> Tuple[Optional[str], Optional[dict]]:
+    """Check CV count before starting a workflow.
+
+    Returns:
+      (None, None)          — only 0 or 1 CV, or caller already chose one → proceed
+      (text, metadata)      — >1 CV and no selection yet → return selection card
+      ("error text", None)  — no CV uploaded at all
+    """
+    import base64 as _b64
+    from app.db.models import UserCV
+
+    if selected_cv_id:
+        return None, None  # already chosen by user, skip prompt
+
+    cv_result = await db.execute(
+        select(UserCV)
+        .where(UserCV.user_id == user_id)
+        .order_by(UserCV.created_at.desc())
+    )
+    cvs = cv_result.scalars().all()
+
+    if not cvs:
+        return (
+            "Please **upload your CV** first using the upload button in the sidebar. "
+            "I need it to tailor applications and match you to the right jobs.",
+            None,
+        )
+
+    if len(cvs) == 1:
+        return None, None  # only one CV, no choice needed
+
+    # Multiple CVs — encode context so it survives the round-trip inside the action string
+    if pending_intent == "job_search":
+        # pending_context is the raw user message — base64-encode it to avoid colon conflicts
+        safe_context = _b64.urlsafe_b64encode(pending_context.encode()).decode()
+    else:
+        safe_context = pending_context  # job_id or other simple value
+
+    return (
+        f"You have **{len(cvs)} CVs** uploaded. Which one should I use for this task?",
+        {
+            "type": "cv_selection",
+            "pending_intent": pending_intent,
+            "pending_context": safe_context,
+            "cvs": [
+                {
+                    "id": cv.id,
+                    "file_name": cv.file_name,
+                    "file_type": cv.file_type,
+                    "is_primary": cv.is_primary,
+                    "created_at": str(cv.created_at) if cv.created_at else None,
+                }
+                for cv in cvs
+            ],
+        },
+    )
+
+
 # ── Job Search Handler ────────────────────────────────────────────────────────
 
 async def _handle_job_search_v2(
-    user_id: str, session_id: str, message: str, db: AsyncSession, limit: int = 5
+    user_id: str, session_id: str, message: str, db: AsyncSession,
+    limit: int = 5, selected_cv_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """Search for jobs, save to DB, return job_results metadata card."""
     from sqlalchemy import select
     from app.db.models import UserCV, JobSearch, Job
     from app.agents.job_hunter import search_jobs
+
+    # ── Multi-CV check: ask user to pick if they have more than one ───────────
+    sel_text, sel_meta = await _maybe_ask_cv_selection(
+        user_id, db, "job_search", message, selected_cv_id
+    )
+    if sel_text is not None:
+        return sel_text, sel_meta
 
     _t = time.monotonic()
     await event_bus.emit_agent_started(user_id, "job_hunter", f"Parsing search query: {message[:60]}")
@@ -287,10 +385,15 @@ Return ONLY valid JSON."""
 
     await event_bus.emit_agent_progress(user_id, "job_hunter", 1, 3, f"Searching for: {search_query}", location or "any location")
 
-    # Load user CV for scoring — extract values now before the long external calls
-    cv_result = await db.execute(
-        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
-    )
+    # Load CV for scoring: use selected CV if provided, else fall back to primary
+    if selected_cv_id:
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.id == selected_cv_id, UserCV.user_id == user_id)
+        )
+    else:
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+        )
     cv = cv_result.scalar_one_or_none()
     cv_id = cv.id if cv else None
     cv_parsed_data = cv.parsed_data if cv else None
@@ -812,7 +915,7 @@ async def _skip_to_next_job(
 
 async def _handle_tailor_apply(
     user_id: str, job_id: str, db: AsyncSession, regenerate: bool = False,
-    _skipped: set = None,
+    _skipped: set = None, selected_cv_id: Optional[str] = None,
 ) -> Tuple[str, Optional[dict]]:
     """Tailor CV, find HR contact, compose email, save records, return cv_review metadata."""
     if _skipped is None:
@@ -829,10 +932,22 @@ async def _handle_tailor_apply(
     if not job:
         return ("Job not found. Please search for jobs first.", None)
 
-    # Load primary CV
-    cv_result = await db.execute(
-        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    # ── Multi-CV check: ask user to pick if they have more than one ───────────
+    sel_text, sel_meta = await _maybe_ask_cv_selection(
+        user_id, db, "tailor", job_id, selected_cv_id
     )
+    if sel_text is not None:
+        return sel_text, sel_meta
+
+    # Load CV: use selected if provided, else fall back to primary
+    if selected_cv_id:
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.id == selected_cv_id, UserCV.user_id == user_id)
+        )
+    else:
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+        )
     cv = cv_result.scalar_one_or_none()
     if not cv or not cv.parsed_data:
         return (

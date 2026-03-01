@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.database import get_db
-from app.db.models import User, UserCV, TailoredCV, Job, JobSearch
+from app.db.models import User, UserCV, TailoredCV, CVEmbedding, Job, JobSearch
 from app.api.deps import get_current_user
 from app.schemas.schemas import CVResponse, CVListResponse, TailoredCVResponse, TailorCVRequest
 from app.config import settings
@@ -147,7 +147,9 @@ async def delete_cv(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Delete a CV."""
+    """Completely delete a CV — removes the file, all embeddings, all tailored CVs, and the DB record.
+    If the deleted CV was primary, the next most recent CV is automatically promoted.
+    """
     result = await db.execute(
         select(UserCV).where(UserCV.id == cv_id, UserCV.user_id == current_user.id)
     )
@@ -155,22 +157,89 @@ async def delete_cv(
     if not cv:
         raise HTTPException(status_code=404, detail="CV not found")
 
-    # Delete associated tailored CVs and their files
-    tailored_result = await db.execute(
-        select(TailoredCV).where(TailoredCV.original_cv_id == cv.id)
+    was_primary = cv.is_primary
+
+    # 1. Delete all CV embeddings for this CV
+    emb_result = await db.execute(
+        select(CVEmbedding).where(CVEmbedding.cv_id == cv_id)
     )
-    tailored_cvs = tailored_result.scalars().all()
-    for tcv in tailored_cvs:
+    for emb in emb_result.scalars().all():
+        await db.delete(emb)
+
+    # 2. Delete all tailored CVs (and their generated PDF files) linked to this CV
+    tailored_result = await db.execute(
+        select(TailoredCV).where(TailoredCV.original_cv_id == cv_id)
+    )
+    for tcv in tailored_result.scalars().all():
         if tcv.pdf_path and os.path.exists(tcv.pdf_path):
-            os.remove(tcv.pdf_path)
+            try:
+                os.remove(tcv.pdf_path)
+            except OSError:
+                pass
         await db.delete(tcv)
 
-    # Delete main CV file
-    if os.path.exists(cv.file_path):
-        os.remove(cv.file_path)
+    # 3. Delete the original CV file from disk
+    if cv.file_path and os.path.exists(cv.file_path):
+        try:
+            os.remove(cv.file_path)
+        except OSError:
+            pass
 
+    # 4. Delete the DB record
     await db.delete(cv)
+    await db.flush()  # apply deletions before promoting primary
+
+    # 5. If the deleted CV was primary, promote the next most recent CV
+    if was_primary:
+        next_result = await db.execute(
+            select(UserCV)
+            .where(UserCV.user_id == current_user.id)
+            .order_by(UserCV.created_at.desc())
+            .limit(1)
+        )
+        next_cv = next_result.scalar_one_or_none()
+        if next_cv:
+            next_cv.is_primary = True
+
     await db.commit()
+
+
+@router.patch("/{cv_id}/set-primary", response_model=CVResponse)
+async def set_primary_cv(
+    cv_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark a CV as primary, unsets the primary flag on all others."""
+    # Verify ownership
+    result = await db.execute(
+        select(UserCV).where(UserCV.id == cv_id, UserCV.user_id == current_user.id)
+    )
+    cv = result.scalar_one_or_none()
+    if not cv:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+    # Unset primary on all other CVs for this user
+    all_result = await db.execute(
+        select(UserCV).where(UserCV.user_id == current_user.id, UserCV.id != cv_id)
+    )
+    for other in all_result.scalars().all():
+        other.is_primary = False
+
+    cv.is_primary = True
+    await db.commit()
+    await db.refresh(cv)
+
+    return CVResponse(
+        id=cv.id,
+        file_name=cv.file_name,
+        file_type=cv.file_type,
+        parsed_data=cv.parsed_data,
+        is_primary=cv.is_primary,
+        created_at=str(cv.created_at) if cv.created_at else None,
+    )
+
+
 @router.patch("/tailored/{tailored_cv_id}")
 async def update_tailored_cv(
     tailored_cv_id: str,
