@@ -3,13 +3,16 @@
 Strategy order (stops at first real result):
   1. Company website scraper         — FREE, no API key needed
   2. Apify Contact Info Scraper      — FREE with existing APIFY_API_KEY
-  3. Common HR inbox probing         — FREE, no API key
+  3. Prospeo Search + Enrich Person  — PROSPEO_API_KEY required
+                                       Searches 200M+ contacts by company domain + HR dept
+                                       Enriches top results for verified emails
+  4. Common HR inbox probing         — FREE, no API key
                                        Tries hr@/careers@/talent@/recruiting@/people@
                                        with MX + email-format.com pattern detection
-  4. SerpAPI HR people search        — FREE with existing SERPAPI_API_KEY
+  5. SerpAPI HR people search        — FREE with existing SERPAPI_API_KEY
                                        Searches Google, extracts name, constructs email
                                        using email-format.com pattern for accuracy
-  5. Honest fallback                 — never fabricates an email
+  6. Honest fallback                 — never fabricates an email
 """
 
 import re
@@ -82,7 +85,19 @@ async def find_hr_contact(
             api_errors.append(f"Apify Contact Scraper: {e}")
             logger.warning("apify_contact_scraper_failed", error=str(e))
 
-    # ── 3. Common HR inbox probing + email-format.com pattern (zero cost) ───────
+    # ── 3. Prospeo Search Person + Enrich Person ─────────────────────────────
+    if settings.PROSPEO_API_KEY and domain:
+        try:
+            result = await _search_prospeo(company, domain, settings.PROSPEO_API_KEY)
+            if result and result.get("hr_email"):
+                result["api_errors"] = api_errors
+                logger.info("hr_found_prospeo", company=company, email=result["hr_email"])
+                return result
+        except Exception as e:
+            api_errors.append(f"Prospeo: {e}")
+            logger.warning("prospeo_search_failed", error=str(e))
+
+    # ── 4. Common HR inbox probing + email-format.com pattern (zero cost) ───────
     if domain:
         try:
             result = await _probe_common_hr_emails(company, domain)
@@ -94,7 +109,7 @@ async def find_hr_contact(
             api_errors.append(f"HR probe: {e}")
             logger.warning("hr_probe_failed", error=str(e))
 
-    # ── 4. SerpAPI HR people search + email construction ─────────────────────
+    # ── 5. SerpAPI HR people search + email construction ─────────────────────
     if settings.SERPAPI_API_KEY and domain:
         try:
             result = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
@@ -106,7 +121,7 @@ async def find_hr_contact(
             api_errors.append(f"SerpAPI HR: {e}")
             logger.warning("serpapi_hr_search_failed", error=str(e))
 
-    # ── 5. Honest fallback ────────────────────────────────────────────────────
+    # ── 6. Honest fallback ────────────────────────────────────────────────────
     careers_url = f"https://{domain}/careers" if domain else ""
     logger.warning("hr_email_not_found", company=company, domain=domain, errors=api_errors)
     return {
@@ -311,7 +326,123 @@ async def _apify_contact_scraper(company: str, domain: str, api_key: str) -> Opt
     }
 
 
-# ── Strategy 3: Common HR inbox probing + email-format.com (zero cost) ───────
+# ── Strategy 3: Prospeo Search Person + Enrich Person ────────────────────────
+
+async def _search_prospeo(company: str, domain: str, api_key: str) -> Optional[dict]:
+    """Use Prospeo Search Person + Enrich Person APIs to find a verified HR email.
+
+    1. Search Person API filters by company website + Human Resources department.
+    2. Enrich the top results to reveal their verified work email.
+
+    Docs:
+      https://prospeo.io/api-docs/search-person
+      https://prospeo.io/api-docs/enrich-person
+    """
+    import httpx
+
+    _headers = {
+        "X-KEY": api_key,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # ── Step 1: search for HR people at this company domain ──────────────
+        search_payload = {
+            "page": 1,
+            "filters": {
+                "company": {
+                    "websites": {"include": [domain]},
+                },
+                "person_department": {
+                    "include": ["Human Resources"],
+                },
+            },
+        }
+
+        try:
+            resp = await client.post(
+                "https://api.prospeo.io/search-person",
+                headers=_headers,
+                json=search_payload,
+            )
+            resp.raise_for_status()
+            search_data = resp.json()
+        except Exception as e:
+            logger.debug("prospeo_search_request_failed", domain=domain, error=str(e))
+            return None
+
+        if search_data.get("error") or not search_data.get("results"):
+            return None
+
+        results = search_data["results"]
+
+        # ── Step 2: enrich top 3 candidates to reveal their email ───────────
+        for result in results[:3]:
+            person = result.get("person", {})
+            person_id = person.get("person_id")
+            if not person_id:
+                continue
+
+            try:
+                enrich_resp = await client.post(
+                    "https://api.prospeo.io/enrich-person",
+                    headers=_headers,
+                    json={
+                        "only_verified_email": True,
+                        "data": {"person_id": person_id},
+                    },
+                )
+                enrich_resp.raise_for_status()
+                enrich_data = enrich_resp.json()
+            except Exception as e:
+                logger.debug("prospeo_enrich_request_failed", person_id=person_id, error=str(e))
+                continue
+
+            if enrich_data.get("error"):
+                continue
+
+            ep = enrich_data.get("person", {})
+            email_obj = ep.get("email", {})
+            email = (email_obj.get("email") or "").strip().lower()
+            email_status = email_obj.get("status", "")
+            email_revealed = email_obj.get("revealed", False)
+
+            # Only accept a fully revealed email
+            if not email_revealed or not email or "@" not in email or "*" in email:
+                continue
+
+            full_name = (
+                ep.get("full_name")
+                or f"{ep.get('first_name', '')} {ep.get('last_name', '')}".strip()
+                or "HR Professional"
+            )
+            job_title = ep.get("current_job_title") or "HR Professional"
+            linkedin = ep.get("linkedin_url") or ""
+            confidence = (
+                0.95 if email_status == "VERIFIED"
+                else 0.70 if email_status == "UNVERIFIED"
+                else 0.50
+            )
+
+            logger.info(
+                "prospeo_email_found",
+                company=company, domain=domain,
+                email=email, status=email_status,
+            )
+            return {
+                "hr_name": full_name,
+                "hr_email": email,
+                "hr_title": job_title,
+                "hr_linkedin": linkedin,
+                "confidence_score": confidence,
+                "source": "prospeo",
+                "verified": email_status == "VERIFIED",
+            }
+
+    return None
+
+
+# ── Strategy 4: Common HR inbox probing + email-format.com (zero cost) ───────
 
 # Standard HR inbox prefixes ordered by likelihood
 _HR_PREFIXES = [
@@ -410,7 +541,7 @@ async def _probe_common_hr_emails(company: str, domain: str) -> Optional[dict]:
     return None
 
 
-# ── Strategy 4: SerpAPI Google HR search + email construction ─────────────────
+# ── Strategy 5: SerpAPI Google HR search + email construction ─────────────────
 
 async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Optional[dict]:
     """Use SerpAPI to search Google for HR/recruiter contacts at the company.
