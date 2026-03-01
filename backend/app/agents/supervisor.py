@@ -295,7 +295,8 @@ def _format_user_context(ctx: dict) -> str:
     if "cv" in ctx:
         cv = ctx["cv"]
         lines.append(f"CANDIDATE PROFILE:")
-        if cv.get("name"):        lines.append(f"  Name: {cv['name']}")
+        if cv.get("name"):
+            lines.append(f"  Name: {cv['name']}")
         if cv.get("current_title"): lines.append(f"  Current role: {cv['current_title']}")
         if cv.get("location"):      lines.append(f"  Location: {cv['location']}")
         if cv.get("years_of_experience"): lines.append(f"  Experience depth: {cv['years_of_experience']} roles")
@@ -2162,83 +2163,68 @@ async def _general_response(
     llm, message: str, history: list = None,
     user_id: str = None, db: AsyncSession = None,
 ) -> str:
-    """Deep, context-aware general response using the user's full profile and pipeline state."""
-    history_block = "(new conversation)"
-    if history:
-        recent = [m for m in history[-14:] if not m["content"].startswith("__")]
-        if recent:
-            history_block = "\n".join(
-                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:500]}"
-                for m in recent
-            )
+    """Conversational, question-specific response — reads the question and answers it directly."""
+    from langchain_core.messages import SystemMessage, HumanMessage
 
-    # Load live user context
-    ctx_block = "(no profile data)"
+    # ── Load user context ──────────────────────────────────────────────────────
+    profile_block = ""
     if user_id and db:
         try:
             ctx = await _load_user_context(user_id, db)
-            ctx_block = _format_user_context(ctx)
-        except Exception as _ctx_err:
-            logger.warning("general_ctx_load_failed", error=str(_ctx_err))
+            profile_block = _format_user_context(ctx)
+        except Exception as e:
+            logger.warning("general_ctx_load_failed", error=str(e))
 
-    prompt = f"""You are CareerAgent — an elite AI job-application strategist with deep expertise in:
-- Global job markets, hiring trends, and recruiter psychology
-- CV/resume optimisation, ATS systems, and keyword engineering
-- Cold outreach, HR email strategies, and application conversion rates
-- Technical interview coaching, system design, and salary negotiation
-- Career pivots, personal branding, and LinkedIn optimisation
+    # ── Build conversation history ─────────────────────────────────────────────
+    history_lines = []
+    if history:
+        for m in history[-12:]:
+            if m["content"].startswith("__"):
+                continue
+            role = "User" if m["role"] == "user" else "You"
+            history_lines.append(f"{role}: {m['content'][:600]}")
 
-═══════════════════════════════════════════
-USER PROFILE & PIPELINE STATE
-═══════════════════════════════════════════
-{ctx_block}
+    # ── System prompt: persona + context, no format constraints ───────────────
+    system_content = """You are CareerAgent — a world-class AI career strategist with expert knowledge in:
+• Global job markets, hiring processes, and recruiter psychology
+• CV/resume writing, ATS optimisation, keyword strategy, and personal branding
+• Cold outreach, networking, and HR email tactics
+• Technical interview prep, system design, coding challenges, salary negotiation
+• Career pivots, skill gap analysis, and industry trends
 
-═══════════════════════════════════════════
-CONVERSATION HISTORY
-═══════════════════════════════════════════
-{history_block}
+You give answers that are specific, intelligent, and directly responsive to what the user asked.
+You never give the same templated answer twice. Every response is uniquely crafted for the question.
+You draw on the user's real profile data when it's available and relevant."""
 
-═══════════════════════════════════════════
-WHAT YOU CAN DO FOR THIS USER RIGHT NOW
-═══════════════════════════════════════════
-• Search jobs: "Find me [role] in [location]" → searches Indeed, LinkedIn, Google Jobs, JSearch
-• Tailor CV & apply: click "Tailor CV & Apply" on any job card
-• Interview prep: type "prepare me for interview" — I'll generate 50+ questions with answers
-• Analyse CV: type "analyse my CV" — I'll score it and give detailed improvement suggestions
-• Auto pipeline: type "apply to all jobs for me" — I'll run everything end-to-end
-• Check pipeline: type "show my applications" — pipeline stats and status breakdown
+    if profile_block:
+        system_content += f"\n\nUser's current profile and pipeline:\n{profile_block}"
 
-═══════════════════════════════════════════
-USER MESSAGE
-═══════════════════════════════════════════
-{message}
+    # ── User message: history + question ─────────────────────────────────────
+    user_parts = []
+    if history_lines:
+        user_parts.append("Conversation so far:\n" + "\n".join(history_lines))
+    user_parts.append(f"User: {message}")
+    user_content = "\n\n".join(user_parts)
 
-═══════════════════════════════════════════
-RESPONSE INSTRUCTIONS
-═══════════════════════════════════════════
-1. PERSONALISE — reference the user's actual skills, companies, job titles, and pipeline from the profile above whenever relevant. Never give generic advice when you have specific data.
-2. BE AN EXPERT — give detailed, strategic, actionable advice. Cite hiring market realities. Explain WHY, not just WHAT.
-3. STRUCTURE — use markdown headers, bullet points, and bold for key terms when the response is multi-part.
-4. SUGGEST NEXT ACTION — always end with a clear, specific next step the user can take right now.
-5. TAKE CHARGE — if the user's question implies they need an agent action (interview prep, job search, CV analysis), proactively tell them exactly what to say to trigger it, or explain you can do it if they confirm.
-6. LENGTH — match depth to question complexity. Simple questions get sharp 2-3 sentence answers. Strategic questions get comprehensive breakdowns.
-
-Respond now as CareerAgent:"""
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(content=user_content),
+    ]
 
     try:
-        # Use a more powerful LLM for general responses — full reasoning required
-        from app.core.llm_router import get_llm as _get_llm
-        smart_llm = _get_llm(task="general_reasoning")
-        response = await smart_llm.ainvoke(prompt)
-        return response.content if hasattr(response, "content") else str(response)
+        response = await llm.ainvoke(messages)
+        text = response.content if hasattr(response, "content") else str(response)
+        if text and text.strip():
+            return text.strip()
+        raise ValueError("Empty response")
     except Exception as e:
-        logger.error("general_llm_error", error=str(e))
-        # Fallback to the caller's llm
+        logger.error("general_llm_messages_failed", error=str(e))
+        # Fallback: plain string prompt
         try:
-            response = await llm.ainvoke(prompt)
-            return response.content if hasattr(response, "content") else str(response)
-        except Exception:
-            return (
-                "I'm your CareerAgent — here to help you land your next role. "
-                "Ask me to find jobs, analyse your CV, prep for interviews, or run the full application pipeline."
-            )
+            plain = f"{system_content}\n\n{user_content}"
+            response = await llm.ainvoke(plain)
+            text = response.content if hasattr(response, "content") else str(response)
+            return text.strip() if text and text.strip() else "I'm here to help — could you rephrase your question?"
+        except Exception as e2:
+            logger.error("general_llm_plain_failed", error=str(e2))
+            return "I'm CareerAgent, your career assistant. Ask me anything about jobs, CVs, interviews, or career strategy."
