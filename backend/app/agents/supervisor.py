@@ -166,11 +166,10 @@ async def process_chat_message(
                 result = (text, None)
 
             elif intent == "automated_apply":
-                # Redirect to plain job search — HITL approval is required per application
-                result = await _handle_job_search_v2(user_id, session_id, message, db)
+                result = await _handle_auto_pipeline(user_id, message, db, session_id=session_id)
 
             else:
-                text = await _general_response(llm, message, history)
+                text = await _general_response(llm, message, history, user_id=user_id, db=db)
                 result = (text, None)
 
     except Exception as e:
@@ -212,55 +211,177 @@ async def _load_conversation_history(
     return [{"role": m.role, "content": m.content} for m in messages]
 
 
+# ── User Context Loader ───────────────────────────────────────────────────────
+
+async def _load_user_context(user_id: str, db: AsyncSession) -> dict:
+    """Load the user's complete profile + pipeline state for personalised responses."""
+    from sqlalchemy import select, desc, func
+    from app.db.models import UserCV, Job, JobSearch, Application, InterviewPrep
+
+    ctx: dict = {}
+
+    # CV
+    cv_row = await db.execute(
+        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    )
+    cv = cv_row.scalar_one_or_none()
+    if cv and cv.parsed_data:
+        pd = cv.parsed_data
+        personal = pd.get("personal_info", {})
+        skills = pd.get("skills", {})
+        exp = pd.get("experience", [])
+        edu = pd.get("education", [])
+        ctx["cv"] = {
+            "name": personal.get("name", ""),
+            "email": personal.get("email", ""),
+            "location": personal.get("location", ""),
+            "current_title": exp[0].get("role", "") if exp else "",
+            "years_of_experience": len(exp),
+            "technical_skills": skills.get("technical", [])[:12],
+            "soft_skills": skills.get("soft", [])[:6],
+            "tools": skills.get("tools", [])[:8],
+            "recent_companies": [e.get("company", "") for e in exp[:4]],
+            "education": [f"{e.get('degree','')} in {e.get('field','')} from {e.get('institution','')}" for e in edu[:2]],
+            "summary": pd.get("summary", "")[:400],
+        }
+
+    # Job search history
+    jobs_row = await db.execute(
+        select(Job).join(JobSearch)
+        .where(JobSearch.user_id == user_id)
+        .order_by(desc(Job.created_at))
+        .limit(15)
+    )
+    jobs = jobs_row.scalars().all()
+    if jobs:
+        ctx["recent_jobs"] = [
+            {
+                "title": j.title, "company": j.company,
+                "location": j.location, "match_score": j.match_score,
+                "hr_found": bool(getattr(j, "hr_found", None)),
+            }
+            for j in jobs
+        ]
+
+    # Applications
+    apps_row = await db.execute(
+        select(Application).where(Application.user_id == user_id)
+        .order_by(desc(Application.created_at)).limit(10)
+    )
+    apps = apps_row.scalars().all()
+    if apps:
+        ctx["applications"] = [{"status": a.status, "job_id": a.job_id} for a in apps]
+        status_counts: dict = {}
+        for a in apps:
+            status_counts[a.status] = status_counts.get(a.status, 0) + 1
+        ctx["application_summary"] = status_counts
+
+    # Interview preps
+    prep_row = await db.execute(
+        select(InterviewPrep).where(InterviewPrep.user_id == user_id)
+        .order_by(desc(InterviewPrep.created_at)).limit(3)
+    )
+    preps = prep_row.scalars().all()
+    if preps:
+        ctx["interview_preps"] = len(preps)
+
+    return ctx
+
+
+def _format_user_context(ctx: dict) -> str:
+    """Format user context dict into a readable block for LLM prompts."""
+    lines = []
+    if "cv" in ctx:
+        cv = ctx["cv"]
+        lines.append(f"CANDIDATE PROFILE:")
+        if cv.get("name"):        lines.append(f"  Name: {cv['name']}")
+        if cv.get("current_title"): lines.append(f"  Current role: {cv['current_title']}")
+        if cv.get("location"):      lines.append(f"  Location: {cv['location']}")
+        if cv.get("years_of_experience"): lines.append(f"  Experience depth: {cv['years_of_experience']} roles")
+        if cv.get("technical_skills"): lines.append(f"  Technical skills: {', '.join(cv['technical_skills'])}")
+        if cv.get("tools"):         lines.append(f"  Tools: {', '.join(cv['tools'])}")
+        if cv.get("recent_companies"): lines.append(f"  Previous employers: {', '.join(cv['recent_companies'])}")
+        if cv.get("education"):     lines.append(f"  Education: {'; '.join(cv['education'])}")
+        if cv.get("summary"):       lines.append(f"  Profile summary: {cv['summary'][:200]}")
+    else:
+        lines.append("CANDIDATE PROFILE: Not yet uploaded (no CV found)")
+
+    if "recent_jobs" in ctx:
+        lines.append(f"RECENT JOB SEARCHES ({len(ctx['recent_jobs'])} jobs found):")
+        for j in ctx["recent_jobs"][:5]:
+            hr = "✓ HR found" if j.get("hr_found") else "✗ no HR"
+            lines.append(f"  • {j['title']} @ {j['company']} — {j.get('match_score', 0)}% match, {hr}")
+
+    if "application_summary" in ctx:
+        lines.append(f"APPLICATION PIPELINE: {ctx['application_summary']}")
+    if "interview_preps" in ctx:
+        lines.append(f"INTERVIEW PREPS COMPLETED: {ctx['interview_preps']}")
+    if not lines:
+        lines.append("(No user data loaded yet)")
+    return "\n".join(lines)
+
+
 # ── Intent Classifier ─────────────────────────────────────────────────────────
 
 async def _classify_intent(llm, message: str, history: list = None) -> str:
-    """Classify the user's intent using the message + recent conversation history."""
-    # Build history context — skip internal __ action messages
+    """Classify user intent with chain-of-thought reasoning over full conversation context."""
     history_block = "(no prior messages)"
     if history:
         recent = [m for m in history[-12:] if not m["content"].startswith("__")][-8:]
         if recent:
-            lines = [
-                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:250]}"
+            history_block = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:300]}"
                 for m in recent
-            ]
-            history_block = "\n".join(lines)
+            )
 
-    prompt = f"""You classify the intent of the LATEST user message in a job-application assistant.
+    prompt = f"""You are the intent router for CareerAgent, an elite AI job-application assistant.
+Your job: read the user's LATEST message and classify it into exactly ONE intent.
 
-INTENTS:
-- job_search: Find/search/discover jobs, roles, or positions (ANY message about finding jobs)
-- cv_upload: Upload or manage CV/resume
-- cv_tailor: Tailor CV for a specific job description
-- interview_prep: Interview preparation help
-- cv_analysis: Analyze or review the existing CV
-- status: Check application status, stats, pipeline
-- continuation: User continues or confirms an ongoing task
-- general: General question or conversation
+AVAILABLE INTENTS (choose exactly one):
+  job_search       — user wants to find / search / discover jobs, roles, or positions
+  cv_upload        — user wants to upload or manage their CV/resume file
+  cv_tailor        — user wants to tailor or customize their CV for a specific job
+  interview_prep   — user wants interview preparation, practice questions, mock interviews
+  cv_analysis      — user wants their CV analyzed, scored, reviewed, or improved
+  status           — user wants to check their application status, pipeline, or statistics
+  continuation     — user is approving, confirming, or continuing the current in-progress task
+  automated_apply  — user wants to automate the FULL apply pipeline end-to-end for multiple jobs
+  general          — career advice, salary questions, help using the tool, or anything else
+
+DECISION RULES (apply in strict priority order):
+1. CONTINUATION — if message is purely: "yes", "ok", "continue", "proceed", "go", "do it", "sure",
+   "send", "send it", "confirm", "approve", "next", "sounds good", "alright", "yep", "go ahead" → continuation
+2. JOB_SEARCH — any mention of finding/searching/discovering/looking for jobs, roles, positions,
+   companies to apply to, or job opportunities → job_search
+3. AUTOMATED_APPLY — "apply to all", "automate", "do everything", "apply automatically",
+   "run the pipeline", "apply for me to all jobs", "send to all companies" → automated_apply
+4. CV_TAILOR — "tailor my CV", "customize my resume", "adapt CV for this job" → cv_tailor
+5. INTERVIEW_PREP — "interview", "prepare for", "practice questions", "mock interview",
+   "behavioral questions", "what will they ask" → interview_prep
+6. CV_ANALYSIS — "analyze my CV", "review my resume", "score my CV", "improve my profile",
+   "what's wrong with my CV", "CV feedback" → cv_analysis
+7. STATUS — "my applications", "how many applied", "pipeline status", "dashboard",
+   "what's happening", "track my applications" → status
+8. CV_UPLOAD — "upload my CV", "add my resume", "change my CV file" → cv_upload
+9. GENERAL — everything else: career advice, salary questions, how the tool works, etc.
 
 CONVERSATION HISTORY:
 {history_block}
 
 LATEST USER MESSAGE: "{message}"
 
-RULES (apply in strict order):
-1. If the message is a short word/phrase ("continue", "yes", "ok", "proceed", "next", "go", "do it", "sure", "send", "send it", "confirm", "approve", "sounds good", "alright", "yep") — return "continuation".
-2. If the message is about finding, searching, or looking for jobs/roles/positions/companies — return "job_search". This includes phrases like "find me jobs", "search for roles", "look for positions", "I want to apply to companies", "find top companies".
-3. If the message is about tailoring or customising a CV for a job — return "cv_tailor".
-4. Otherwise classify from the literal message.
-
-IMPORTANT: Never return an intent not in the list above. Any request to find or search for jobs MUST return "job_search".
-
-Return ONLY the intent label, one word."""
+Think briefly, then return ONLY the intent label (one word, lowercase, no punctuation)."""
 
     try:
         response = await llm.ainvoke(prompt)
         content = response.content if hasattr(response, "content") else str(response)
-        intent = content.strip().lower().replace('"', "").replace("'", "").split()[0]
+        # Strip chain-of-thought if LLM added any — take last word on last non-empty line
+        lines = [ln.strip() for ln in content.strip().splitlines() if ln.strip()]
+        raw = lines[-1] if lines else content.strip()
+        intent = raw.lower().replace('"', "").replace("'", "").split()[-1]
         valid = {
             "job_search", "cv_upload", "cv_tailor", "interview_prep",
-            "cv_analysis", "status", "continuation", "general",
+            "cv_analysis", "status", "continuation", "automated_apply", "general",
         }
         return intent if intent in valid else "general"
     except Exception:
@@ -1850,41 +1971,87 @@ async def _handle_status_request(user_id: str, db: AsyncSession) -> str:
 
 
 
-async def _general_response(llm, message: str, history: list = None) -> str:
-    """General LLM response with full conversation context."""
-    history_block = ""
+async def _general_response(
+    llm, message: str, history: list = None,
+    user_id: str = None, db: AsyncSession = None,
+) -> str:
+    """Deep, context-aware general response using the user's full profile and pipeline state."""
+    history_block = "(new conversation)"
     if history:
-        recent = [m for m in history[-10:] if not m["content"].startswith("__")]
+        recent = [m for m in history[-14:] if not m["content"].startswith("__")]
         if recent:
-            lines = [
-                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:400]}"
+            history_block = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:500]}"
                 for m in recent
-            ]
-            history_block = "\n".join(lines)
+            )
 
-    prompt = f"""You are Digital FTE, an AI-powered job application assistant.
-You help users find jobs, tailor CVs, apply to positions, and prepare for interviews.
+    # Load live user context
+    ctx_block = "(no profile data)"
+    if user_id and db:
+        try:
+            ctx = await _load_user_context(user_id, db)
+            ctx_block = _format_user_context(ctx)
+        except Exception as _ctx_err:
+            logger.warning("general_ctx_load_failed", error=str(_ctx_err))
 
-Available features:
-- Job search: type "Find me [role] jobs in [location]"
-- CV upload: sidebar upload button
-- Apply: search jobs → click "Tailor CV & Apply" on a job card
-- Interview prep: after applying, click "Prep Interview" on the confirmation card
+    prompt = f"""You are CareerAgent — an elite AI job-application strategist with deep expertise in:
+- Global job markets, hiring trends, and recruiter psychology
+- CV/resume optimisation, ATS systems, and keyword engineering
+- Cold outreach, HR email strategies, and application conversion rates
+- Technical interview coaching, system design, and salary negotiation
+- Career pivots, personal branding, and LinkedIn optimisation
 
-CONVERSATION HISTORY:
-{history_block if history_block else "(new conversation)"}
+═══════════════════════════════════════════
+USER PROFILE & PIPELINE STATE
+═══════════════════════════════════════════
+{ctx_block}
 
-User: {message}
+═══════════════════════════════════════════
+CONVERSATION HISTORY
+═══════════════════════════════════════════
+{history_block}
 
-Respond helpfully and concisely. If the user seems to be continuing a previous task
-(e.g. "continue", "yes", "ok"), acknowledge the context and guide them forward."""
+═══════════════════════════════════════════
+WHAT YOU CAN DO FOR THIS USER RIGHT NOW
+═══════════════════════════════════════════
+• Search jobs: "Find me [role] in [location]" → searches Indeed, LinkedIn, Google Jobs, JSearch
+• Tailor CV & apply: click "Tailor CV & Apply" on any job card
+• Interview prep: type "prepare me for interview" — I'll generate 50+ questions with answers
+• Analyse CV: type "analyse my CV" — I'll score it and give detailed improvement suggestions
+• Auto pipeline: type "apply to all jobs for me" — I'll run everything end-to-end
+• Check pipeline: type "show my applications" — pipeline stats and status breakdown
+
+═══════════════════════════════════════════
+USER MESSAGE
+═══════════════════════════════════════════
+{message}
+
+═══════════════════════════════════════════
+RESPONSE INSTRUCTIONS
+═══════════════════════════════════════════
+1. PERSONALISE — reference the user's actual skills, companies, job titles, and pipeline from the profile above whenever relevant. Never give generic advice when you have specific data.
+2. BE AN EXPERT — give detailed, strategic, actionable advice. Cite hiring market realities. Explain WHY, not just WHAT.
+3. STRUCTURE — use markdown headers, bullet points, and bold for key terms when the response is multi-part.
+4. SUGGEST NEXT ACTION — always end with a clear, specific next step the user can take right now.
+5. TAKE CHARGE — if the user's question implies they need an agent action (interview prep, job search, CV analysis), proactively tell them exactly what to say to trigger it, or explain you can do it if they confirm.
+6. LENGTH — match depth to question complexity. Simple questions get sharp 2-3 sentence answers. Strategic questions get comprehensive breakdowns.
+
+Respond now as CareerAgent:"""
 
     try:
-        response = await llm.ainvoke(prompt)
+        # Use a more powerful LLM for general responses — full reasoning required
+        from app.core.llm_router import get_llm as _get_llm
+        smart_llm = _get_llm(task="general_reasoning")
+        response = await smart_llm.ainvoke(prompt)
         return response.content if hasattr(response, "content") else str(response)
     except Exception as e:
         logger.error("general_llm_error", error=str(e))
-        return (
-            "I'm here to help with your job search! "
-            "Ask me to find jobs, tailor your CV, or prepare for interviews."
-        )
+        # Fallback to the caller's llm
+        try:
+            response = await llm.ainvoke(prompt)
+            return response.content if hasattr(response, "content") else str(response)
+        except Exception:
+            return (
+                "I'm your CareerAgent — here to help you land your next role. "
+                "Ask me to find jobs, analyse your CV, prep for interviews, or run the full application pipeline."
+            )
