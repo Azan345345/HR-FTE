@@ -277,7 +277,7 @@ export function saveGoogleCredentials(client_id: string, client_secret: string) 
     return api<{ status: string }>("/integrations/google/credentials", {
         method: "POST",
         token: getToken(),
-        body: { client_id, client_secret },
+        body: JSON.stringify({ client_id, client_secret }),
     });
 }
 

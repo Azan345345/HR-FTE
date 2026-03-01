@@ -51,11 +51,22 @@ async def save_google_credentials(
     current_user: User = Depends(get_current_user),
 ):
     """Save user's own Google OAuth Client ID and Client Secret."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    client_id = body.client_id.strip()
+    client_secret = body.client_secret.strip()
+
     prefs = dict(current_user.preferences or {})
-    prefs["google_client_id"] = body.client_id.strip()
-    prefs["google_client_secret"] = body.client_secret.strip()
+    prefs["google_client_id"] = client_id
+    prefs["google_client_secret"] = client_secret
     current_user.preferences = prefs
+    flag_modified(current_user, "preferences")
     await db.commit()
+
+    # Also update the live settings object so OAuth works immediately
+    settings.GOOGLE_OAUTH_CLIENT_ID = client_id
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = client_secret
+
     return {"status": "saved"}
 
 
