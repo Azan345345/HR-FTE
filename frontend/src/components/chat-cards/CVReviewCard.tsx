@@ -23,6 +23,14 @@ interface ExperienceEntry {
   achievements: string[];
 }
 
+interface CertificationEntry {
+  name: string;
+  issuer: string;
+  date: string;
+  expiry?: string;
+  credential_id?: string;
+}
+
 interface TailoredCVPreview {
   name?: string;
   contact?: string;
@@ -71,9 +79,10 @@ interface Props {
 
 // ── AI change tracking ─────────────────────────────────────────────────────────
 interface AiChanges {
-  fields: Set<string>;        // 'summary' | 'cover' | 'skills' | 'experience'
+  fields: Set<string>;        // 'summary' | 'cover' | 'skills' | 'experience' | 'certifications'
   addedSkills: Set<string>;   // skill strings added by AI
   addedBullets: Set<string>;  // bullet strings added by AI
+  addedCerts: Set<string>;    // cert names added by AI
   prevSummary: string;
   prevCover: string;
   count: number;
@@ -170,7 +179,16 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
     })()
   );
   const [editedCoverLetter, setEditedCoverLetter] = useState(cover_letter);
-  const [activeEditTab, setActiveEditTab] = useState<"summary" | "experience" | "skills" | "cover">("summary");
+  const [editedCertifications, setEditedCertifications] = useState<CertificationEntry[]>(
+    (tailored_cv.certifications || []).map((c: any) => ({
+      name: c.name || c.title || "",
+      issuer: c.issuer || c.organization || c.issued_by || "",
+      date: c.date || c.year || c.obtained || "",
+      expiry: c.expiry || c.expires || "",
+      credential_id: c.credential_id || c.id || "",
+    }))
+  );
+  const [activeEditTab, setActiveEditTab] = useState<"summary" | "experience" | "skills" | "certifications" | "cover">("summary");
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const aiInputRef = useRef<HTMLInputElement>(null);
@@ -180,6 +198,7 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
     fields: new Set(),
     addedSkills: new Set(),
     addedBullets: new Set(),
+    addedCerts: new Set(),
     prevSummary: tailored_cv.summary || "",
     prevCover: cover_letter,
     count: 0,
@@ -187,16 +206,22 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
 
   // ── Save edits ───────────────────────────────────────────────────────────────
   const handleSaveEdits = async () => {
+    const edits = {
+      summary: editedSummary,
+      experience: editedExperience,
+      skills: editedSkillsRaw,
+      cover_letter: editedCoverLetter,
+      certifications: editedCertifications,
+    };
     if (!tailored_cv_id) {
-      const payload = JSON.stringify({ summary: editedSummary, experience: editedExperience, skills: editedSkillsRaw, cover_letter: editedCoverLetter });
-      onSendAction(`__EDIT_CV__:${tailored_cv_id || application_id}:${payload}`);
+      onSendAction(`__EDIT_CV__:${tailored_cv_id || application_id}:${JSON.stringify(edits)}`);
       toast.success("CV changes saved!");
       setEditOpen(false);
       return;
     }
     setSaving(true);
     try {
-      await updateTailoredCV(tailored_cv_id, { summary: editedSummary, experience: editedExperience, skills: editedSkillsRaw, cover_letter: editedCoverLetter });
+      await updateTailoredCV(tailored_cv_id, edits);
       toast.success("CV edits saved successfully!");
       setEditOpen(false);
     } catch (err: any) {
@@ -219,6 +244,7 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
         cover: "cover_letter",
         skills: "skills",
         experience: "experience",
+        certifications: "certifications",
       };
       const section = sectionMap[activeEditTab] || activeEditTab;
 
@@ -229,6 +255,8 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
         currentContent = Object.entries(editedSkillsRaw).map(([k, v]) => `${k}: ${v.join(", ")}`).join("\n");
       else if (activeEditTab === "experience")
         currentContent = editedExperience.map(e => `${e.role} at ${e.company}:\n${e.achievements.map(a => `• ${a}`).join("\n")}`).join("\n\n");
+      else if (activeEditTab === "certifications")
+        currentContent = editedCertifications.map(c => `${c.name} | ${c.issuer} | ${c.date}`).join("\n");
 
       const resp = await aiRewriteCVSection({
         section,
@@ -305,6 +333,59 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
         } else {
           toast.info("AI suggestion (apply manually): " + resp.content.slice(0, 120));
         }
+
+      } else if (activeEditTab === "certifications") {
+        // Parse "Name | Issuer | Date" lines or JSON from AI response
+        const existingNames = new Set(editedCertifications.map(c => c.name.toLowerCase()));
+        let parsed: CertificationEntry[] = [];
+
+        // Try JSON first
+        try {
+          const json = JSON.parse(resp.content.replace(/```json|```/g, "").trim());
+          const arr = Array.isArray(json) ? json : [json];
+          parsed = arr.map((c: any) => ({
+            name: c.name || c.title || "",
+            issuer: c.issuer || c.organization || c.issued_by || "",
+            date: c.date || c.year || "",
+            expiry: c.expiry || "",
+            credential_id: c.credential_id || "",
+          })).filter((c: CertificationEntry) => c.name);
+        } catch {
+          // Fallback: parse "Name | Issuer | Date" text lines
+          parsed = resp.content
+            .split("\n")
+            .map(l => l.replace(/^[\s\-\*•]+/, "").trim())
+            .filter(l => l.length > 3)
+            .map(l => {
+              const parts = l.split("|").map(p => p.trim());
+              return { name: parts[0] || l, issuer: parts[1] || "", date: parts[2] || "" };
+            })
+            .filter(c => c.name);
+        }
+
+        if (parsed.length > 0) {
+          const newNames = parsed.filter(c => !existingNames.has(c.name.toLowerCase())).map(c => c.name);
+          setEditedCertifications(prev => {
+            // Update existing certs and append new ones
+            const updated = [...prev];
+            for (const cert of parsed) {
+              const idx = updated.findIndex(c => c.name.toLowerCase() === cert.name.toLowerCase());
+              if (idx >= 0) updated[idx] = { ...updated[idx], ...cert };
+              else updated.push(cert);
+            }
+            return updated;
+          });
+          setAiChanges(prev => ({
+            ...prev,
+            fields: new Set([...prev.fields, "certifications"]),
+            addedCerts: new Set([...prev.addedCerts, ...newNames]),
+            count: prev.count + newNames.length,
+          }));
+          setDiffExpanded(true);
+          toast.success(`${parsed.length} certification(s) updated — ${newNames.length} new`);
+        } else {
+          toast.info("AI suggestion: " + resp.content.slice(0, 120));
+        }
       }
     } catch (err: any) {
       toast.error("AI rewrite failed: " + (err.message || "unknown error"));
@@ -321,6 +402,13 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
     setEditedExperience(prev => prev.map((e, i) => i === expIdx ? { ...e, achievements: e.achievements.filter((_, j) => j !== bulletIdx) } : e));
   const updateSkillCategory = (category: string, value: string) =>
     setEditedSkillsRaw(prev => ({ ...prev, [category]: value.split(",").map(s => s.trim()).filter(Boolean) }));
+
+  const addCert = () =>
+    setEditedCertifications(prev => [...prev, { name: "", issuer: "", date: "", expiry: "", credential_id: "" }]);
+  const removeCert = (idx: number) =>
+    setEditedCertifications(prev => prev.filter((_, i) => i !== idx));
+  const updateCert = (idx: number, field: keyof CertificationEntry, value: string) =>
+    setEditedCertifications(prev => prev.map((c, i) => i === idx ? { ...c, [field]: value } : c));
 
   const highFlags = red_flags.filter(f => f.severity === "high");
   const hasAiChanges = aiChanges.count > 0;
@@ -472,6 +560,22 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
                   )}
                 </div>
               )}
+
+              {/* New certifications */}
+              {aiChanges.addedCerts.size > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[9px] font-semibold text-slate-500 uppercase tracking-wide">
+                    Certifications Added ({aiChanges.addedCerts.size})
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {[...aiChanges.addedCerts].map((c, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-full text-[9px] font-semibold">
+                        + {c}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -563,6 +667,34 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
                           })}
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {/* Certifications — AI-added ones highlighted */}
+                  {editedCertifications.length > 0 && (
+                    <div className={`transition-all duration-300 ${aiChanges.fields.has("certifications") ? "border-l-2 border-green-400 pl-2 bg-green-50/30 rounded-r-lg py-1" : ""}`}>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5 flex items-center gap-1.5">
+                        Certifications {aiChanges.fields.has("certifications") && <AiBadge />}
+                      </p>
+                      {editedCertifications.map((cert, i) => {
+                        const isNew = aiChanges.addedCerts.has(cert.name);
+                        return (
+                          <div
+                            key={i}
+                            className={`mb-1.5 flex items-start gap-1.5 ${isNew ? "bg-green-50 px-1.5 py-0.5 rounded border border-green-100" : ""}`}
+                          >
+                            <span className={`text-[10px] flex-shrink-0 font-bold mt-0.5 ${isNew ? "text-green-500" : "text-amber-400"}`}>
+                              {isNew ? "+" : "★"}
+                            </span>
+                            <div>
+                              <p className="text-[10px] font-semibold text-slate-800 leading-tight">{cert.name}</p>
+                              <p className="text-[9px] text-slate-400">
+                                {cert.issuer}{cert.date ? ` · ${cert.date}` : ""}{cert.expiry ? ` → ${cert.expiry}` : ""}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -760,9 +892,11 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
           </DialogHeader>
 
           {/* Tabs */}
-          <div className="flex gap-1 border-b border-slate-100 pb-2 flex-shrink-0">
-            {(["summary", "experience", "skills", "cover"] as const).map(tab => {
-              const hasTabChange = aiChanges.fields.has(tab) || (tab === "skills" && aiChanges.addedSkills.size > 0);
+          <div className="flex gap-1 border-b border-slate-100 pb-2 flex-shrink-0 flex-wrap">
+            {(["summary", "experience", "skills", "certifications", "cover"] as const).map(tab => {
+              const hasTabChange = aiChanges.fields.has(tab)
+                || (tab === "skills" && aiChanges.addedSkills.size > 0)
+                || (tab === "certifications" && aiChanges.addedCerts.size > 0);
               return (
                 <button
                   key={tab}
@@ -771,7 +905,7 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
                     activeEditTab === tab ? "bg-rose-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                   }`}
                 >
-                  {tab === "cover" ? "Cover Letter" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {tab === "cover" ? "Cover Letter" : tab === "certifications" ? "Certs" : tab.charAt(0).toUpperCase() + tab.slice(1)}
                   {hasTabChange && (
                     <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border border-white" />
                   )}
@@ -859,6 +993,109 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
               </div>
             )}
 
+            {activeEditTab === "certifications" && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-semibold text-slate-600 font-sans flex items-center gap-1.5">
+                    Certifications
+                    {aiChanges.addedCerts.size > 0 && <AiBadge label={`+${aiChanges.addedCerts.size}`} />}
+                  </label>
+                  <button
+                    onClick={addCert}
+                    className="flex items-center gap-1 text-[11px] text-rose-500 hover:text-rose-700 font-sans font-medium"
+                  >
+                    <Plus size={11} /> Add Certificate
+                  </button>
+                </div>
+
+                {editedCertifications.length === 0 && (
+                  <div className="text-center py-8 text-[11px] text-slate-400 font-sans border border-dashed border-slate-200 rounded-lg">
+                    No certifications yet. Click "Add Certificate" or ask AI to suggest relevant ones.
+                  </div>
+                )}
+
+                {editedCertifications.map((cert, idx) => {
+                  const isNew = aiChanges.addedCerts.has(cert.name);
+                  return (
+                    <div
+                      key={idx}
+                      className={`border rounded-xl p-3 space-y-2 transition-colors ${isNew ? "border-green-200 bg-green-50/40" : "border-slate-200"}`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
+                          {isNew ? <span className="text-green-500">★ New</span> : `Cert #${idx + 1}`}
+                        </span>
+                        <button onClick={() => removeCert(idx)} className="p-1 text-slate-300 hover:text-red-400 transition-colors">
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+
+                      {/* Name */}
+                      <div>
+                        <label className="text-[10px] text-slate-500 font-sans block mb-0.5">Certificate Name *</label>
+                        <input
+                          value={cert.name}
+                          onChange={e => updateCert(idx, "name", e.target.value)}
+                          className={`w-full border rounded-lg px-3 py-2 text-[12px] font-sans outline-none focus:border-rose-300 transition-colors ${isNew ? "border-green-200 bg-green-50/30" : "border-slate-200"}`}
+                          placeholder="e.g. AWS Certified Solutions Architect"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        {/* Issuer */}
+                        <div>
+                          <label className="text-[10px] text-slate-500 font-sans block mb-0.5">Issuing Organization</label>
+                          <input
+                            value={cert.issuer}
+                            onChange={e => updateCert(idx, "issuer", e.target.value)}
+                            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[12px] font-sans outline-none focus:border-rose-300 transition-colors"
+                            placeholder="e.g. Amazon Web Services"
+                          />
+                        </div>
+
+                        {/* Date */}
+                        <div>
+                          <label className="text-[10px] text-slate-500 font-sans block mb-0.5">Date Issued</label>
+                          <input
+                            value={cert.date}
+                            onChange={e => updateCert(idx, "date", e.target.value)}
+                            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[12px] font-sans outline-none focus:border-rose-300 transition-colors"
+                            placeholder="e.g. Jan 2024"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        {/* Expiry */}
+                        <div>
+                          <label className="text-[10px] text-slate-500 font-sans block mb-0.5">Expiry Date <span className="text-slate-300">(optional)</span></label>
+                          <input
+                            value={cert.expiry || ""}
+                            onChange={e => updateCert(idx, "expiry", e.target.value)}
+                            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[12px] font-sans outline-none focus:border-rose-300 transition-colors"
+                            placeholder="e.g. Jan 2027 or No Expiry"
+                          />
+                        </div>
+
+                        {/* Credential ID */}
+                        <div>
+                          <label className="text-[10px] text-slate-500 font-sans block mb-0.5">Credential ID <span className="text-slate-300">(optional)</span></label>
+                          <input
+                            value={cert.credential_id || ""}
+                            onChange={e => updateCert(idx, "credential_id", e.target.value)}
+                            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[12px] font-sans outline-none focus:border-rose-300 transition-colors"
+                            placeholder="ID or verification URL"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <p className="text-[10px] text-slate-400">Tip: Ask AI to suggest certifications relevant to this job role — it will add them automatically.</p>
+              </div>
+            )}
+
             {activeEditTab === "cover" && (
               <div>
                 <label className="text-[11px] font-semibold text-slate-600 font-sans block mb-1.5 flex items-center gap-1.5">
@@ -898,6 +1135,7 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
                   activeEditTab === "summary" ? "e.g. Make it more results-focused and aggressive..." :
                   activeEditTab === "experience" ? "e.g. Add more metrics and power verbs to all entries..." :
                   activeEditTab === "skills" ? "e.g. Prioritize cloud skills, add Kubernetes..." :
+                  activeEditTab === "certifications" ? "e.g. Suggest relevant AWS or Azure certifications for this role..." :
                   "e.g. Make the opening hook more compelling..."
                 }
                 disabled={aiLoading}
