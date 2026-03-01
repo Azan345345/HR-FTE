@@ -2,12 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
-  Pencil, Sparkles, Search, FileText, Mail, Zap, Bot,
+  Pencil, Sparkles, Search, FileText, Mail, Zap, Bot, Loader2, CheckCircle2, GitMerge,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { sendChatMessage, getChatHistory } from "@/services/api";
-import { useAgentStore } from "@/stores/agent-store";
+import { useAgentStore, JobStreamState, StreamSource } from "@/stores/agent-store";
 import { JobResultsCard } from "./chat-cards/JobResultsCard";
 import { CVReviewCard } from "./chat-cards/CVReviewCard";
 import { EmailReviewCard } from "./chat-cards/EmailReviewCard";
@@ -177,6 +177,122 @@ function AgentBubble({
   );
 }
 
+const SOURCE_META: Record<string, { icon: string; color: string }> = {
+  indeed:      { icon: "🟦", color: "bg-blue-50 border-blue-100 text-blue-700" },
+  linkedin:    { icon: "🔗", color: "bg-sky-50 border-sky-100 text-sky-700" },
+  google_jobs: { icon: "🔴", color: "bg-red-50 border-red-100 text-red-700" },
+  jsearch:     { icon: "🟡", color: "bg-amber-50 border-amber-100 text-amber-700" },
+};
+
+function SourceSection({ source }: { source: StreamSource }) {
+  const meta = SOURCE_META[source.key] || { icon: "🔍", color: "bg-slate-50 border-slate-100 text-slate-600" };
+  return (
+    <div className="space-y-1.5">
+      <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-semibold ${meta.color}`}>
+        <span>{meta.icon}</span>
+        <span>{source.label}</span>
+        {source.searching
+          ? <Loader2 size={10} className="animate-spin" />
+          : <CheckCircle2 size={10} className="text-green-500" />
+        }
+        {!source.searching && <span className="opacity-60">· {source.jobs.length} found</span>}
+      </div>
+      <AnimatePresence>
+        {source.jobs.map((job, i) => (
+          <motion.div
+            key={`${source.key}-${i}`}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.2, delay: i * 0.04 }}
+            className="flex items-start gap-2.5 p-2.5 bg-white rounded-xl border border-slate-100 shadow-sm"
+          >
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center shrink-0 text-[10px] font-bold text-slate-500 uppercase">
+              {(job.company || "?").slice(0, 2)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[12px] font-semibold text-slate-800 truncate leading-snug">{job.title}</p>
+              <p className="text-[11px] text-slate-500 truncate">{job.company}{job.location ? ` · ${job.location}` : ""}</p>
+            </div>
+            {job.job_type && (
+              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded shrink-0">
+                {job.job_type}
+              </span>
+            )}
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function LiveJobStreamPanel({ stream }: { stream: JobStreamState }) {
+  const totalFound = stream.sources.reduce((n, s) => n + s.jobs.length, 0);
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -16, y: 8 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      className="max-w-[85%]"
+    >
+      <div className="flex items-center gap-2 mb-2 opacity-70">
+        <AgentAvatar />
+        <span className="text-[11px] font-semibold text-primary tracking-wide">CareerAgent</span>
+        <span className="text-[10px] text-slate-400">· Live</span>
+      </div>
+      <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-4 py-4 shadow-sm space-y-4">
+        {/* Header */}
+        <div className="flex items-center gap-2">
+          <Search size={13} className="text-primary" />
+          <span className="text-[13px] font-semibold text-slate-800">Searching for jobs…</span>
+          {totalFound > 0 && (
+            <span className="ml-auto text-[11px] font-bold text-primary">{totalFound} found so far</span>
+          )}
+        </div>
+
+        {/* Per-source sections */}
+        {stream.sources.map(source => (
+          <SourceSection key={source.key} source={source} />
+        ))}
+
+        {/* No sources yet — searching spinner */}
+        {stream.sources.length === 0 && (
+          <div className="flex items-center gap-2 text-slate-400">
+            <Loader2 size={13} className="animate-spin" />
+            <span className="text-[12px]">Connecting to job sources…</span>
+          </div>
+        )}
+
+        {/* Deduplication */}
+        {stream.deduplicating && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex items-center gap-2 pt-2 border-t border-slate-100"
+          >
+            <GitMerge size={13} className="text-amber-500 animate-pulse" />
+            <span className="text-[12px] text-slate-600">
+              Deduplicating {totalFound} jobs across {stream.sources.length} sources…
+            </span>
+          </motion.div>
+        )}
+        {stream.dedupResult && !stream.deduplicating && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex items-center gap-2 pt-2 border-t border-slate-100"
+          >
+            <CheckCircle2 size={13} className="text-green-500" />
+            <span className="text-[12px] text-slate-600">
+              Removed <strong>{stream.dedupResult.removed}</strong> duplicate
+              {stream.dedupResult.removed !== 1 ? "s" : ""} →{" "}
+              <strong className="text-primary">{stream.dedupResult.after}</strong> unique jobs
+            </span>
+          </motion.div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 function ThinkingBubble() {
   return (
     <motion.div
@@ -258,6 +374,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const { jobStream, clearJobStream } = useAgentStore();
+
   const sessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => { sessionIdRef.current = activeSessionId; }, [activeSessionId]);
 
@@ -320,6 +438,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
       const resp = await sendChatMessage(text, targetSessionId);
       if (!activeSessionId) onSessionCreated(targetSessionId);
+      clearJobStream(); // hide live stream panel once final response arrives
       setMessages((prev) => [
         ...prev,
         {
@@ -555,8 +674,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           );
         })}
 
-        {/* Animated thinking indicator */}
-        {(isSending || isUploading) && <ThinkingBubble />}
+        {/* Live job stream OR generic thinking indicator */}
+        {(isSending || isUploading) && (
+          jobStream?.active
+            ? <LiveJobStreamPanel stream={jobStream} />
+            : <ThinkingBubble />
+        )}
 
         <div ref={chatEndRef} />
       </div>

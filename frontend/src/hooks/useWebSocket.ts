@@ -4,7 +4,7 @@
  * to the agent store.
  */
 import { useEffect, useRef, useCallback, useState } from "react";
-import { useAgentStore, AgentName } from "@/stores/agent-store";
+import { useAgentStore, AgentName, StreamJob } from "@/stores/agent-store";
 
 // Use Vite proxy in dev (relative URL → ws://localhost:5173/ws → proxied to backend)
 const WS_URL =
@@ -30,7 +30,10 @@ const agentEmojiMap: Record<string, string> = {
 export function useWebSocket(token: string | null) {
     const wsRef = useRef<WebSocket | null>(null);
     const [isConnected, setIsConnected] = useState(false);
-    const { setAgentStatus, setActiveAgent, addCompletedNode, addLog, updateLastLogStatus } = useAgentStore();
+    const {
+        setAgentStatus, setActiveAgent, addCompletedNode, addLog, updateLastLogStatus,
+        startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone,
+    } = useAgentStore();
 
     const connect = useCallback(() => {
         if (!token || wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -94,6 +97,10 @@ export function useWebSocket(token: string | null) {
                         thought: (data.thought as string) || (plan.length > 60 ? plan : undefined),
                         status: "running",
                     });
+                    // Start job stream panel when job_hunter begins
+                    if (agentName === "job_hunter") {
+                        startJobStream();
+                    }
                     break;
                 }
 
@@ -205,6 +212,28 @@ export function useWebSocket(token: string | null) {
                     });
                     break;
 
+                case "jobs_stream": {
+                    const phase = data.phase as string;
+                    if (phase === "source_start") {
+                        jobStreamSourceStart(data.source as string, data.source_label as string);
+                    } else if (phase === "searching") {
+                        jobStreamBatch(
+                            data.source as string,
+                            data.source_label as string,
+                            (data.jobs as StreamJob[]) || [],
+                        );
+                    } else if (phase === "deduplicating") {
+                        jobStreamDeduplicating();
+                    } else if (phase === "dedup_done") {
+                        jobStreamDedupDone(
+                            data.before as number,
+                            data.after as number,
+                            data.removed as number,
+                        );
+                    }
+                    break;
+                }
+
                 case "pong":
                     break;
 
@@ -212,7 +241,7 @@ export function useWebSocket(token: string | null) {
                     break;
             }
         },
-        [setAgentStatus, setActiveAgent, addCompletedNode]
+        [setAgentStatus, setActiveAgent, addCompletedNode, startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone]
     );
 
     useEffect(() => {

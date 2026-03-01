@@ -12,6 +12,30 @@ export interface LogEntry {
     duration?: string;
     tokens?: string;
 }
+
+export interface StreamJob {
+    title: string;
+    company: string;
+    location: string;
+    job_type?: string;
+    salary_range?: string;
+    application_url?: string;
+    source: string;
+}
+
+export interface StreamSource {
+    key: string;
+    label: string;
+    jobs: StreamJob[];
+    searching: boolean; // true = spinner, false = done
+}
+
+export interface JobStreamState {
+    sources: StreamSource[];
+    deduplicating: boolean;
+    dedupResult?: { before: number; after: number; removed: number };
+    active: boolean; // set false when final results arrive
+}
 export type AgentName =
     | "supervisor"
     | "cv_parser"
@@ -44,6 +68,7 @@ interface AgentStoreState {
     activeAgent: AgentName | null;
     completedNodes: string[];
     logs: LogEntry[];
+    jobStream: JobStreamState | null;
     setAgentStatus: (name: AgentName, updates: Partial<AgentInfo>) => void;
     setActiveAgent: (name: AgentName | null) => void;
     addCompletedNode: (node: string) => void;
@@ -51,6 +76,13 @@ interface AgentStoreState {
     updateLastLogStatus: (agent: string, status: LogEntry["status"]) => void;
     setAgentDrafts: (name: AgentName, drafts: AgentInfo["drafts"]) => void;
     resetAll: () => void;
+    // Job streaming
+    startJobStream: () => void;
+    jobStreamSourceStart: (key: string, label: string) => void;
+    jobStreamBatch: (key: string, label: string, jobs: StreamJob[]) => void;
+    jobStreamDeduplicating: () => void;
+    jobStreamDedupDone: (before: number, after: number, removed: number) => void;
+    clearJobStream: () => void;
 }
 
 const defaultAgents: Record<AgentName, AgentInfo> = {
@@ -69,6 +101,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     activeAgent: null,
     completedNodes: [],
     logs: [],
+    jobStream: null,
 
     setAgentStatus: (name, updates) =>
         set((state) => ({
@@ -116,5 +149,52 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
         })),
 
     resetAll: () =>
-        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [] }),
+        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [], jobStream: null }),
+
+    startJobStream: () =>
+        set({ jobStream: { sources: [], deduplicating: false, active: true } }),
+
+    jobStreamSourceStart: (key, label) =>
+        set((state) => {
+            if (!state.jobStream) return state;
+            const existing = state.jobStream.sources.find(s => s.key === key);
+            if (existing) return state;
+            return {
+                jobStream: {
+                    ...state.jobStream,
+                    sources: [...state.jobStream.sources, { key, label, jobs: [], searching: true }],
+                },
+            };
+        }),
+
+    jobStreamBatch: (key, label, jobs) =>
+        set((state) => {
+            if (!state.jobStream) return state;
+            const sources = state.jobStream.sources.map(s =>
+                s.key === key ? { ...s, jobs: [...s.jobs, ...jobs], searching: false } : s
+            );
+            // If source wasn't added yet (race condition), add it now
+            if (!sources.find(s => s.key === key)) {
+                sources.push({ key, label, jobs, searching: false });
+            }
+            return { jobStream: { ...state.jobStream, sources } };
+        }),
+
+    jobStreamDeduplicating: () =>
+        set((state) => state.jobStream
+            ? { jobStream: { ...state.jobStream, deduplicating: true } }
+            : state
+        ),
+
+    jobStreamDedupDone: (before, after, removed) =>
+        set((state) => state.jobStream
+            ? { jobStream: { ...state.jobStream, deduplicating: false, dedupResult: { before, after, removed } } }
+            : state
+        ),
+
+    clearJobStream: () =>
+        set((state) => state.jobStream
+            ? { jobStream: { ...state.jobStream, active: false } }
+            : state
+        ),
 }));

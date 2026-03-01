@@ -156,17 +156,39 @@ Return ONLY JSON."""
     all_jobs: list[dict] = []
     sources_tried: list[str] = []
 
+    async def _emit_batch(source_key: str, source_label: str, jobs: list[dict]):
+        """Emit a batch of jobs found from one source to the frontend."""
+        await event_bus.emit(user_id, "jobs_stream", {
+            "phase": "searching",
+            "source": source_key,
+            "source_label": source_label,
+            "jobs": [
+                {
+                    "title": j.get("title", ""),
+                    "company": j.get("company", ""),
+                    "location": j.get("location", ""),
+                    "job_type": j.get("job_type", ""),
+                    "salary_range": j.get("salary_range", ""),
+                    "application_url": j.get("application_url", ""),
+                    "source": j.get("source", source_key),
+                }
+                for j in jobs
+            ],
+            "count": len(jobs),
+        })
+
     # 2. Apify Indeed (real listings — broad international coverage)
     if settings.APIFY_API_KEY:
         try:
-            await event_bus.emit_agent_progress(
-                user_id, "job_hunter", 1, 4, "Searching Indeed via Apify"
-            )
+            await event_bus.emit(user_id, "jobs_stream", {
+                "phase": "source_start", "source": "indeed", "source_label": "Indeed"
+            })
             apify_jobs = await _search_apify_indeed(
                 search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(apify_jobs)
             sources_tried.append("indeed")
+            await _emit_batch("indeed", "Indeed", apify_jobs)
             logger.info("apify_indeed_results", count=len(apify_jobs))
         except Exception as e:
             logger.warning("apify_indeed_failed", error=str(e))
@@ -174,14 +196,15 @@ Return ONLY JSON."""
     # 2b. Apify LinkedIn (secondary source)
     if settings.APIFY_API_KEY:
         try:
-            await event_bus.emit_agent_progress(
-                user_id, "job_hunter", 1, 4, "Searching LinkedIn via Apify"
-            )
+            await event_bus.emit(user_id, "jobs_stream", {
+                "phase": "source_start", "source": "linkedin", "source_label": "LinkedIn"
+            })
             linkedin_jobs = await _search_apify_linkedin(
                 search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(linkedin_jobs)
             sources_tried.append("linkedin")
+            await _emit_batch("linkedin", "LinkedIn", linkedin_jobs)
             logger.info("apify_linkedin_results", count=len(linkedin_jobs))
         except Exception as e:
             logger.warning("apify_linkedin_failed", error=str(e))
@@ -189,15 +212,16 @@ Return ONLY JSON."""
     # 3. SerpAPI Google Jobs
     if settings.SERPAPI_API_KEY:
         try:
-            await event_bus.emit_agent_progress(
-                user_id, "job_hunter", 2, 4,
-                f"Searching Google Jobs ({country_name or 'Global'})"
-            )
+            await event_bus.emit(user_id, "jobs_stream", {
+                "phase": "source_start", "source": "google_jobs",
+                "source_label": f"Google Jobs ({country_name or 'Global'})"
+            })
             serpapi_jobs = await _search_serpapi(
                 search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(serpapi_jobs)
             sources_tried.append("google_jobs")
+            await _emit_batch("google_jobs", f"Google Jobs", serpapi_jobs)
             logger.info("serpapi_results", count=len(serpapi_jobs))
         except Exception as e:
             logger.warning("serpapi_failed", error=str(e))
@@ -205,24 +229,33 @@ Return ONLY JSON."""
     # 4. RapidAPI JSearch
     if settings.RAPIDAPI_KEY:
         try:
-            await event_bus.emit_agent_progress(
-                user_id, "job_hunter", 3, 4, "Searching RapidAPI JSearch"
-            )
+            await event_bus.emit(user_id, "jobs_stream", {
+                "phase": "source_start", "source": "jsearch", "source_label": "JSearch"
+            })
             jsearch_jobs = await _search_jsearch(
                 search_title, search_location, limit, country_code, job_type
             )
             all_jobs.extend(jsearch_jobs)
             sources_tried.append("jsearch")
+            await _emit_batch("jsearch", "JSearch", jsearch_jobs)
             logger.info("jsearch_results", count=len(jsearch_jobs))
         except Exception as e:
             logger.warning("jsearch_failed", error=str(e))
 
     # 5. Cross-platform deduplication (fuzzy company+title match)
-    await event_bus.emit_agent_progress(
-        user_id, "job_hunter", 4, 4,
-        f"Deduplicating {len(all_jobs)} listings from {len(sources_tried)} sources"
-    )
+    await event_bus.emit(user_id, "jobs_stream", {
+        "phase": "deduplicating",
+        "total": len(all_jobs),
+        "sources": len(sources_tried),
+    })
     unique_jobs = _deduplicate(all_jobs)
+    removed = len(all_jobs) - len(unique_jobs)
+    await event_bus.emit(user_id, "jobs_stream", {
+        "phase": "dedup_done",
+        "before": len(all_jobs),
+        "after": len(unique_jobs),
+        "removed": removed,
+    })
     logger.info("after_dedup", before=len(all_jobs), after=len(unique_jobs))
 
     # 7. CV-based scoring
