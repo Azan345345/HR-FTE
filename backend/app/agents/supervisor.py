@@ -398,24 +398,29 @@ _RE_IMPROVEMENT_REQUEST = re.compile(
 # Broad CV questions that aren't explicit analysis/tailor/upload — route to cv_general agent
 # Checked AFTER cv_tailor, cv_upload, cv_analysis so those specific patterns win first.
 _RE_CV_GENERAL = re.compile(
-    # Any question/request that directly mentions the user's CV or resume
-    r"\b(what|how|tell me|show|is|are|can|could|would|should|help|give me|help me)\b"
-    r".{0,50}\b(my\s+)?(cv|resume|profile)\b"
+    # ── Verb-first patterns: "improve my CV", "fix my resume", "help me with my profile"
+    r"\b(improve|fix|enhance|strengthen|revamp|upgrade|polish|update|work\s+on"
+    r"|help\s+(?:me\s+)?(?:with\s+)?(?:my\s+)?|make\s+(?:my\s+)?)\b"
+    r".{0,30}\b(my\s+)?(cv|resume|profile)\b"
+    # ── CV-first patterns: "my CV is weak", "my resume needs fixing"
     r"|\b(my\s+)?(cv|resume|profile)\b.{0,40}"
     r"\b(good|bad|strong|weak|ready|missing|lacking|complete|tips|advice|better"
-    r"|improve|fix|update|change|edit|look|issues?|problems?|wrong|gaps?)\b"
-    # Questions about personal strengths / skills / suitability
+    r"|improve|fix|update|change|edit|look|issues?|problems?|wrong|gaps?|feedback)\b"
+    # ── Question words + CV: "what's wrong with my CV", "how is my resume"
+    r"|\b(what|how|tell me|show|is|are|can|could|would|should|help|give me|help me)\b"
+    r".{0,50}\b(my\s+)?(cv|resume|profile)\b"
+    # ── Strength/weakness questions
     r"|\bwhat\s+(are|is)\s+(my|the)\s+(strongest?|best|key|main|top|weakest?|core)\s+"
     r"(skills?|strengths?|weaknesses?|areas?|points?|qualities)\b"
     r"|\bam\s+I\s+(qualified|suitable|a\s+good\s+fit|ready|experienced\s+enough"
     r"|overqualified|underqualified)\b"
-    # CV section rewrites
+    # ── Section rewrites: "rewrite my summary", "improve my headline"
     r"|\b(rewrite|write|generate|draft|improve|enhance|revise)\b.{0,30}"
     r"\b(summary|headline|bio|objective|cover\s+letter|bullet\s+point|achievement)\b"
-    # CV strategy terms
+    # ── CV strategy terms
     r"|\b(ats|applicant\s+tracking|keyword\s+gap|skill\s+gap|missing\s+skills?"
     r"|personal\s+brand(ing)?|career\s+gap|employment\s+gap)\b"
-    # Role/career fit based on their background
+    # ── Role fit based on background
     r"|\bwhat\s+(roles?|jobs?|positions?|companies?)\b.{0,30}\b(suited|fit|good|qualified|eligible)\b"
     r"|\bam\s+I\s+.{0,20}\b(senior|junior|mid.?level|lead|principal)\b",
     re.IGNORECASE,
@@ -513,24 +518,27 @@ Classify the LATEST user message into EXACTLY ONE of these intents:
 
   job_search       — user explicitly wants to FIND / SEARCH for new jobs right now
   cv_upload        — user wants to upload, change, or replace their CV file
-  cv_tailor        — user wants to tailor/customise their CV for a specific job opening
+  cv_tailor        — user wants to tailor their CV for a SPECIFIC named job or company
+                     (ONLY when they name or reference a particular job/company/role they applied to)
   cv_analysis      — user explicitly asks to formally ANALYSE, SCORE, or AUDIT their CV
-  cv_general       — any other question or request about the user's own CV/resume/profile
-                     (improvements, rewrites, strengths, weaknesses, skill gaps, ATS, career fit, etc.)
+  cv_general       — ANY question or request about their own CV/resume/profile that is NOT cv_tailor:
+                     general improvements, rewrites, "improve my CV", "fix my resume",
+                     strengths, weaknesses, skill gaps, ATS tips, career fit, etc.
   interview_prep   — interview preparation, practice questions, mock interview, study plan
   status           — asking about saved jobs, applications, or pipeline state they ALREADY have
   continuation     — confirming / approving / continuing an in-progress task
   automated_apply  — full automated end-to-end apply pipeline
-  general          — EVERYTHING ELSE: career advice, salary negotiation, industry trends,
-                     company research, networking, learning paths, market insights, soft skills,
-                     job market questions, how the tool works, or any topic not matching above
+  general          — EVERYTHING ELSE: career advice, salary, industry trends, networking, etc.
 
-⚠️  CRITICAL RULES:
-- "general" is the BROAD default — use it for any career, work, or life question that doesn't match a specific intent above
-- "cv_general" vs "cv_analysis": "cv_analysis" = explicit formal review/score/audit. "cv_general" = anything else about their CV
-- "job_search" ONLY when the user explicitly wants to search for new jobs RIGHT NOW — not for general job market questions
-- "status" ONLY for questions about jobs/applications the user has ALREADY found or applied to
-- NEVER return "job_search" for general questions about the job market, interview tips, salary, etc.
+⚠️  CRITICAL RULES — read very carefully:
+- "cv_tailor" requires the user to name a SPECIFIC job or company they want to tailor for.
+  "improve my CV", "fix my resume", "make my CV better" → these are cv_general, NOT cv_tailor.
+  "tailor my CV for the Google SWE role" → cv_tailor.
+- "cv_general" is the default for ANYTHING about the user's own CV that isn't cv_tailor/cv_upload/cv_analysis.
+- "general" is the BROAD default for all career/work/life questions not related to their specific CV.
+- "job_search" ONLY when the user explicitly wants to search for new jobs RIGHT NOW.
+- "status" ONLY for questions about jobs/applications the user has ALREADY found or applied to.
+- NEVER return "cv_tailor" unless the user explicitly names a job or company they want to target.
 
 CONVERSATION HISTORY:
 {history_block}
