@@ -688,17 +688,18 @@ async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Opt
 async def batch_find_hr_contacts(jobs: list) -> list:
     """Run HR email lookup for all jobs concurrently.
 
-    Returns only jobs that have a verified/found HR email, with the contact
-    data attached as ``job['_hr_contact']``. Jobs without HR emails are
-    silently discarded.
+    Returns ALL jobs annotated with:
+      '_hr_contact': dict  — HR contact data if a verified email was found, else absent
+      'hr_found': bool     — True if a verified HR email was found
 
     Args:
         jobs: List of job dicts (must contain at least 'company' and 'title').
 
     Returns:
-        Filtered list — only jobs where an HR email was found.
+        Full list with 'hr_found' flag on each job.
     """
     async def _lookup(job_data: dict) -> dict:
+        job_data = dict(job_data)  # don't mutate original
         try:
             result = await find_hr_contact(
                 company=job_data.get("company", ""),
@@ -706,24 +707,29 @@ async def batch_find_hr_contacts(jobs: list) -> list:
                 company_domain=job_data.get("company_domain"),
             )
             if result.get("hr_email"):
-                job_data = dict(job_data)  # don't mutate original
                 job_data["_hr_contact"] = result
+                job_data["hr_found"] = True
+            else:
+                job_data["hr_found"] = False
         except Exception as e:
             logger.warning("batch_hr_lookup_error", company=job_data.get("company"), error=str(e))
+            job_data["hr_found"] = False
         return job_data
 
     results = await asyncio.gather(*[_lookup(j) for j in jobs], return_exceptions=True)
 
-    verified = []
+    all_jobs = []
+    verified = 0
     for r in results:
         if isinstance(r, Exception):
             logger.warning("batch_hr_gather_error", error=str(r))
             continue
-        if r.get("_hr_contact"):
-            verified.append(r)
+        all_jobs.append(r)
+        if r.get("hr_found"):
+            verified += 1
 
-    logger.info("batch_hr_complete", total=len(jobs), verified=len(verified))
-    return verified
+    logger.info("batch_hr_complete", total=len(jobs), verified=verified)
+    return all_jobs
 
 
 # ── Email construction + DNS verification ────────────────────────────────────

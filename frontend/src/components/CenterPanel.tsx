@@ -439,7 +439,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const { jobStream } = useAgentStore();
+  const { jobStream, clearJobStream } = useAgentStore();
 
   const sessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => { sessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -503,6 +503,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
       const resp = await sendChatMessage(text, targetSessionId);
       if (!activeSessionId) onSessionCreated(targetSessionId);
+      // Clear live stream panel when final job results card arrives — avoids duplication
+      if (resp.metadata?.type === "job_results") clearJobStream();
       setMessages((prev) => [
         ...prev,
         {

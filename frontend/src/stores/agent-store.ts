@@ -125,22 +125,23 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     addLog: (log) =>
         set((state) => ({
             logs: [
-                ...state.logs,
+                // Prepend — newest log at index 0 (top of the list)
                 {
                     ...log,
                     id: crypto.randomUUID(),
                     time: new Date().toLocaleTimeString("en-US", { hour12: false }),
                 },
+                ...state.logs,
             ],
         })),
 
     updateLastLogStatus: (agent, status) =>
         set((state) => {
-            const index = [...state.logs].reverse().findIndex(l => l.agent === agent);
+            // Logs are newest-first, so first match is the most recent one
+            const index = state.logs.findIndex(l => l.agent === agent);
             if (index === -1) return state;
-            const realIndex = state.logs.length - 1 - index;
             const newLogs = [...state.logs];
-            newLogs[realIndex] = { ...newLogs[realIndex], status };
+            newLogs[index] = { ...newLogs[index], status };
             return { logs: newLogs };
         }),
 

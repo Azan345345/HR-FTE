@@ -1,4 +1,4 @@
-import { ExternalLink, Briefcase, MapPin, DollarSign, Zap, ChevronRight } from "lucide-react";
+import { ExternalLink, Briefcase, MapPin, DollarSign, Zap, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
@@ -15,6 +15,7 @@ interface Job {
   missing_skills?: string[];
   why_match?: string[];
   application_url?: string;
+  hr_found?: boolean;
 }
 
 interface JobResultsMeta {
@@ -55,7 +56,9 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: 0.1 + idx * 0.07 }}
-          className="rounded-xl border border-slate-200 bg-slate-50 hover:border-rose-200 hover:bg-rose-50/30 transition-all"
+          className={`rounded-xl border transition-all ${job.hr_found === false
+            ? "border-red-200 bg-red-50/40 opacity-80"
+            : "border-slate-200 bg-slate-50 hover:border-rose-200 hover:bg-rose-50/30"}`}
         >
           <div className="p-4">
             <div className="flex items-start gap-3">
@@ -124,14 +127,21 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
 
             {/* Actions */}
             <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
-              <Button
-                size="sm"
-                className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
-                onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
-              >
-                <Briefcase size={12} />
-                Tailor CV & Apply
-              </Button>
+              {job.hr_found === false ? (
+                <div className="flex-1 flex items-center gap-1.5 text-[11px] text-red-500 font-sans font-medium">
+                  <XCircle size={13} className="flex-shrink-0" />
+                  No verified HR email — direct application unavailable
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
+                  onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
+                >
+                  <Briefcase size={12} />
+                  Tailor CV & Apply
+                </Button>
+              )}
               {job.application_url && (
                 <Button
                   size="sm"

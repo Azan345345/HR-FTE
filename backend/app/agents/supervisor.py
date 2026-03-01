@@ -443,33 +443,18 @@ Return ONLY valid JSON."""
     raw_count = len(jobs)
     await event_bus.emit_agent_progress(user_id, "job_hunter", 2, 3, f"Scoring {raw_count} jobs against your CV", "Calculating match scores")
 
-    # ── HR email pre-filter: only keep jobs with a verified HR contact ─────────
+    # ── HR email lookup: annotate ALL jobs with hr_found flag ─────────────────
     from app.agents.hr_finder import batch_find_hr_contacts
     await event_bus.emit_agent_started(
         user_id, "hr_finder",
-        f"Pre-checking HR contacts for {raw_count} jobs (concurrent lookup)"
+        f"Checking HR contacts for {raw_count} jobs (concurrent lookup)"
     )
-    jobs = await batch_find_hr_contacts(jobs)
+    jobs = await batch_find_hr_contacts(jobs)  # returns all, each with hr_found flag
 
-    if not jobs:
-        await event_bus.emit_agent_completed(
-            user_id, "hr_finder",
-            f"No verified HR contacts found across {raw_count} jobs"
-        )
-        location_str_tmp = f" in {location}" if location else ""
-        return (
-            f"Found **{raw_count} jobs** for \"{search_query}\"{location_str_tmp}, "
-            "but none had a verified HR contact email. "
-            "Try a different role, location, or company size — "
-            "HR emails are easier to find at mid-size companies.",
-            None,
-        )
-
-    discarded = raw_count - len(jobs)
+    verified_count = sum(1 for j in jobs if j.get("hr_found"))
     await event_bus.emit_agent_completed(
         user_id, "hr_finder",
-        f"HR pre-filter: {len(jobs)}/{raw_count} jobs have verified HR contacts"
-        + (f" ({discarded} discarded)" if discarded else "")
+        f"HR lookup complete: {verified_count}/{raw_count} jobs have verified HR emails"
     )
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -553,21 +538,23 @@ Return ONLY valid JSON."""
                 "missing_skills": job_record.missing_skills or [],
                 "why_match": why_match,
                 "application_url": job_record.application_url,
-                "hr_found": bool(hr_pre),
+                "hr_found": job_data.get("hr_found", bool(hr_pre)),
             })
 
         await fresh_db.commit()
         await _log_execution(fresh_db, user_id, session_id, "job_hunter", f"search:{search_query}", "success",
                              int((time.monotonic() - _t) * 1000))
         await fresh_db.commit()
-    await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} positions with verified HR contacts")
+    verified_saved = sum(1 for j in saved_jobs if j.get("hr_found"))
+    await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} unique jobs, {verified_saved} with verified HR contacts")
     await event_bus.emit_workflow_update(user_id, "job_hunter", ["job_hunter", "hr_finder"], ["cv_tailor", "email_sender"])
 
     location_str = f" in {location}" if location else ""
-    filter_note = f" *(filtered from {raw_count} found — only showing jobs with verified HR contacts)*" if discarded else ""
+    hr_note = f" — **{verified_saved}** with verified HR email (apply-ready)" if verified_saved < len(saved_jobs) else ""
     text = (
-        f"Found **{len(saved_jobs)} positions** with verified HR contacts matching \"{search_query}\"{location_str}.{filter_note} "
-        "Click **'Tailor CV & Apply'** on any job to start tailoring your CV and sending the application."
+        f"Found **{len(saved_jobs)} positions** matching \"{search_query}\"{location_str}.{hr_note} "
+        "Jobs with a verified HR email show a **'Tailor CV & Apply'** button. "
+        "Jobs without a verified HR contact show a red ✗ — you can still view them but cannot send a direct application."
     )
 
     return (text, {

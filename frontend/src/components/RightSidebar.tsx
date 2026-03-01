@@ -99,7 +99,7 @@ export function RightSidebar() {
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = 0; // newest log is at top
     }
   }, [logs]);
 
