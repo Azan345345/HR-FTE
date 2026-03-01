@@ -155,8 +155,8 @@ async def process_chat_message(
                     None,
                 )
 
-            elif intent == "cv_analysis":
-                text = await _handle_cv_analysis_request(user_id, message, llm, db)
+            elif intent in ("cv_analysis", "cv_general"):
+                text = await _handle_cv_general_request(user_id, message, history, db)
                 result = (text, None)
 
             elif intent == "interview_prep":
@@ -383,6 +383,32 @@ _RE_STATUS_EXPLICIT = re.compile(
     re.IGNORECASE,
 )
 
+# Broad CV questions that aren't explicit analysis/tailor/upload — route to cv_general agent
+# Checked AFTER cv_tailor, cv_upload, cv_analysis so those specific patterns win first.
+_RE_CV_GENERAL = re.compile(
+    # Any question/request that directly mentions the user's CV or resume
+    r"\b(what|how|tell me|show|is|are|can|could|would|should|help|give me|help me)\b"
+    r".{0,50}\b(my\s+)?(cv|resume|profile)\b"
+    r"|\b(my\s+)?(cv|resume|profile)\b.{0,40}"
+    r"\b(good|bad|strong|weak|ready|missing|lacking|complete|tips|advice|better"
+    r"|improve|fix|update|change|edit|look|issues?|problems?|wrong|gaps?)\b"
+    # Questions about personal strengths / skills / suitability
+    r"|\bwhat\s+(are|is)\s+(my|the)\s+(strongest?|best|key|main|top|weakest?|core)\s+"
+    r"(skills?|strengths?|weaknesses?|areas?|points?|qualities)\b"
+    r"|\bam\s+I\s+(qualified|suitable|a\s+good\s+fit|ready|experienced\s+enough"
+    r"|overqualified|underqualified)\b"
+    # CV section rewrites
+    r"|\b(rewrite|write|generate|draft|improve|enhance|revise)\b.{0,30}"
+    r"\b(summary|headline|bio|objective|cover\s+letter|bullet\s+point|achievement)\b"
+    # CV strategy terms
+    r"|\b(ats|applicant\s+tracking|keyword\s+gap|skill\s+gap|missing\s+skills?"
+    r"|personal\s+brand(ing)?|career\s+gap|employment\s+gap)\b"
+    # Role/career fit based on their background
+    r"|\bwhat\s+(roles?|jobs?|positions?|companies?)\b.{0,30}\b(suited|fit|good|qualified|eligible)\b"
+    r"|\bam\s+I\s+.{0,20}\b(senior|junior|mid.?level|lead|principal)\b",
+    re.IGNORECASE,
+)
+
 # Questions about existing saved jobs / applications (route to rich status, not search)
 _RE_MY_JOBS = re.compile(
     r"\b(show|list|what|which|tell me about|view)\b.{0,30}\b(my\s+)?(saved|discovered|found|applied|pending|recent)\b.{0,20}\bjobs?\b"
@@ -438,6 +464,11 @@ def _keyword_classify(message: str) -> Optional[str]:
     if _RE_JOB_SEARCH.search(msg_stripped):
         return "job_search"
 
+    # 8. Broad CV questions (checked last — catches anything mentioning CV/resume
+    #    that wasn't caught by the more specific patterns above)
+    if _RE_CV_GENERAL.search(msg_stripped):
+        return "cv_general"
+
     # Ambiguous — let LLM decide
     return None
 
@@ -465,27 +496,29 @@ async def _classify_intent(llm, message: str, history: list = None) -> str:
                 for m in recent
             )
 
-    prompt = f"""You are the intent router for CareerAgent — an AI job application assistant.
+    prompt = f"""You are the intent router for CareerAgent — an AI career assistant.
 Classify the LATEST user message into EXACTLY ONE of these intents:
 
-  job_search       — finding / searching for new jobs or roles
-  cv_upload        — uploading or replacing a CV file
-  cv_tailor        — tailoring/customising CV for a specific job
-  interview_prep   — interview preparation, practice questions, mock interview
-  cv_analysis      — analysing, reviewing, or scoring an existing CV
-  status           — asking about saved jobs, applications, pipeline state
+  job_search       — user explicitly wants to FIND / SEARCH for new jobs right now
+  cv_upload        — user wants to upload, change, or replace their CV file
+  cv_tailor        — user wants to tailor/customise their CV for a specific job opening
+  cv_analysis      — user explicitly asks to formally ANALYSE, SCORE, or AUDIT their CV
+  cv_general       — any other question or request about the user's own CV/resume/profile
+                     (improvements, rewrites, strengths, weaknesses, skill gaps, ATS, career fit, etc.)
+  interview_prep   — interview preparation, practice questions, mock interview, study plan
+  status           — asking about saved jobs, applications, or pipeline state they ALREADY have
   continuation     — confirming / approving / continuing an in-progress task
   automated_apply  — full automated end-to-end apply pipeline
-  general          — career advice, salary info, how the tool works, or anything else NOT above
+  general          — EVERYTHING ELSE: career advice, salary negotiation, industry trends,
+                     company research, networking, learning paths, market insights, soft skills,
+                     job market questions, how the tool works, or any topic not matching above
 
-⚠️  CRITICAL RULES — read carefully:
-- Return "general" for ANY question about careers, salary, market trends, tech stacks, company info,
-  best practices, tips, etc. — even if it mentions jobs in passing.
-- Return "cv_analysis" ONLY if the user explicitly asks to ANALYSE or REVIEW THEIR OWN CV.
-  Do NOT return cv_analysis for general career questions.
-- Return "status" ONLY for questions about jobs/applications the user has ALREADY found or applied to.
-  Do NOT return status for general questions.
-- Return "job_search" ONLY when the user explicitly wants to FIND NEW jobs right now.
+⚠️  CRITICAL RULES:
+- "general" is the BROAD default — use it for any career, work, or life question that doesn't match a specific intent above
+- "cv_general" vs "cv_analysis": "cv_analysis" = explicit formal review/score/audit. "cv_general" = anything else about their CV
+- "job_search" ONLY when the user explicitly wants to search for new jobs RIGHT NOW — not for general job market questions
+- "status" ONLY for questions about jobs/applications the user has ALREADY found or applied to
+- NEVER return "job_search" for general questions about the job market, interview tips, salary, etc.
 
 CONVERSATION HISTORY:
 {history_block}
@@ -502,7 +535,7 @@ Return ONLY the intent label — one word, lowercase, no punctuation, nothing el
         intent = raw.lower().replace('"', "").replace("'", "").split()[-1]
         valid = {
             "job_search", "cv_upload", "cv_tailor", "interview_prep",
-            "cv_analysis", "status", "continuation", "automated_apply", "general",
+            "cv_analysis", "cv_general", "status", "continuation", "automated_apply", "general",
         }
         result = intent if intent in valid else "general"
         logger.debug("supervisor_llm_intent", intent=result, message=message[:80])
@@ -2019,10 +2052,13 @@ async def _handle_edit_cv(
 
 # ── Existing Handlers ─────────────────────────────────────────────────────────
 
-async def _handle_cv_analysis_request(user_id: str, message: str, llm, db: AsyncSession) -> str:
+async def _handle_cv_general_request(
+    user_id: str, message: str, history: list, db: AsyncSession
+) -> str:
+    """Route any CV question (general or explicit analysis) to the cv_general agent."""
     from sqlalchemy import select
     from app.db.models import UserCV
-    from langchain_core.messages import SystemMessage, HumanMessage
+    from app.agents.cv_general import answer_cv_question
 
     cv_result = await db.execute(
         select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
@@ -2031,120 +2067,26 @@ async def _handle_cv_analysis_request(user_id: str, message: str, llm, db: Async
     if not cv or not cv.parsed_data:
         return (
             "I don't see a CV on file yet. Upload your PDF or DOCX using the button in the "
-            "left sidebar and I'll give you a full analysis right away."
+            "left sidebar and I'll give you a full, personalised answer right away."
         )
 
-    await event_bus.emit_agent_started(user_id, "cv_parser", "Deep-reading your CV")
-
-    data = cv.parsed_data
-    personal = data.get("personal_info", {}) or {}
-    skills = data.get("skills", {}) or {}
-    exp = data.get("experience", []) or []
-    edu = data.get("education", []) or []
-    projects = data.get("projects", []) or []
-    certs = data.get("certifications", []) or []
-    summary = data.get("professional_summary", "") or ""
-
-    # Build a structured CV snapshot for the LLM
-    cv_block_parts = []
-
-    if personal.get("name"):
-        cv_block_parts.append(f"Name: {personal['name']}")
-    if personal.get("location"):
-        cv_block_parts.append(f"Location: {personal['location']}")
-    if personal.get("linkedin"):
-        cv_block_parts.append(f"LinkedIn: {personal['linkedin']}")
-    if summary:
-        cv_block_parts.append(f"\nProfessional Summary:\n{summary[:400]}")
-
-    tech_skills = skills.get("technical", []) or []
-    soft_skills = skills.get("soft", []) or []
-    tools_skills = skills.get("tools", []) or []
-    langs = skills.get("languages", []) or []
-    all_skills = tech_skills + tools_skills
-    if all_skills:
-        cv_block_parts.append(f"\nTechnical Skills: {', '.join(str(s) for s in all_skills[:20])}")
-    if soft_skills:
-        cv_block_parts.append(f"Soft Skills: {', '.join(str(s) for s in soft_skills[:8])}")
-    if langs:
-        cv_block_parts.append(f"Languages: {', '.join(str(s) for s in langs[:5])}")
-
-    if exp:
-        cv_block_parts.append("\nWork Experience:")
-        for job in exp[:6]:
-            role = job.get("role") or job.get("title") or "Role"
-            company = job.get("company", "")
-            duration = job.get("duration") or job.get("period") or ""
-            descs = job.get("descriptions", []) or job.get("bullets", []) or []
-            cv_block_parts.append(f"  • {role} at {company} ({duration})")
-            for d in descs[:3]:
-                cv_block_parts.append(f"    - {str(d)[:120]}")
-
-    if edu:
-        cv_block_parts.append("\nEducation:")
-        for school in edu[:3]:
-            deg = school.get("degree", "")
-            field = school.get("field", "")
-            inst = school.get("institution", "")
-            year = school.get("graduation_year", "")
-            cv_block_parts.append(f"  • {deg} in {field} — {inst} {year}".strip())
-
-    if projects:
-        cv_block_parts.append(f"\nProjects ({len(projects)} listed):")
-        for p in projects[:4]:
-            name = p.get("name", "Project")
-            desc = p.get("description", "")
-            cv_block_parts.append(f"  • {name}: {str(desc)[:100]}")
-
-    if certs:
-        cv_block_parts.append(f"\nCertifications: {', '.join(str(c.get('name', c)) for c in certs[:5])}")
-
-    cv_block = "\n".join(cv_block_parts)
-
-    system_content = (
-        "You are CareerAgent — an elite career strategist and CV expert with deep HR industry knowledge. "
-        "You have just been given a candidate's complete CV data. Your job is to give them honest, "
-        "specific, actionable analysis based on what they asked. "
-        "Avoid generic advice. Reference their actual job titles, companies, skills, and achievements. "
-        "Be direct and insightful — point out real strengths and real weaknesses. "
-        "Use a professional but conversational tone. Format with markdown headers and bullets where helpful. "
-        "Do NOT produce the same template for every request — adapt your response to exactly what they asked."
-    )
-
-    user_content = (
-        f"Here is my CV:\n\n{cv_block}\n\n"
-        f"My question / request: {message}"
-    )
+    await event_bus.emit_agent_started(user_id, "cv_parser", "Reading your CV")
 
     try:
-        response = await llm.ainvoke([
-            SystemMessage(content=system_content),
-            HumanMessage(content=user_content),
-        ])
-        analysis = response.content if hasattr(response, "content") else str(response)
+        answer = await answer_cv_question(
+            cv_data=cv.parsed_data,
+            question=message,
+            history=history,
+        )
     except Exception as e:
-        logger.error("cv_analysis_llm_error", error=str(e))
-        # Graceful degradation — still better than the old hardcoded template
-        name = personal.get("name", "your profile")
-        skills_str = ", ".join(str(s) for s in (tech_skills + tools_skills)[:10])
-        exp_str = ", ".join(
-            "{} at {}".format(ex.get("role", ""), ex.get("company", ""))
-            for ex in exp[:3]
-        )
-        edu_str = ", ".join(
-            "{} from {}".format(ed.get("degree", ""), ed.get("institution", ""))
-            for ed in edu[:2]
-        )
-        analysis = (
-            f"Here's a quick overview of **{name}**'s CV:\n\n"
-            f"**Skills:** {skills_str}\n\n"
-            f"**Experience:** {len(exp)} role(s) on record — {exp_str}\n\n"
-            f"**Education:** {edu_str}\n\n"
-            "Ask me anything specific about your CV or how to improve it for a target role!"
+        logger.error("cv_general_request_error", error=str(e))
+        answer = (
+            "I ran into a problem generating your CV analysis. Please try again — "
+            "if the issue persists, re-upload your CV from the sidebar."
         )
 
-    await event_bus.emit_agent_completed(user_id, "cv_parser", "CV analysis complete")
-    return analysis
+    await event_bus.emit_agent_completed(user_id, "cv_parser", "CV answer ready")
+    return answer
 
 
 async def _handle_status_request(user_id: str, db: AsyncSession) -> str:
