@@ -150,7 +150,7 @@ class TailoredCV(Base):
     id = Column(String, primary_key=True, default=_uuid)
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     original_cv_id = Column(String, ForeignKey("user_cvs.id"), nullable=True)
-    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(String, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True)  # nullable for general CV improvements
     tailored_data = Column(JSON, nullable=False)
     pdf_path = Column(Text, default=None)
     cover_letter = Column(Text, default=None)

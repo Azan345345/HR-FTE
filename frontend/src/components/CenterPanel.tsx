@@ -14,6 +14,8 @@ import { EmailReviewCard } from "./chat-cards/EmailReviewCard";
 import { ApplicationSentCard } from "./chat-cards/ApplicationSentCard";
 import { InterviewPrepCard } from "./chat-cards/InterviewPrepCard";
 import { CVSelectionCard } from "./chat-cards/CVSelectionCard";
+import { CVImprovementActionCard } from "./chat-cards/CVImprovementActionCard";
+import { CVImprovedCard } from "./chat-cards/CVImprovedCard";
 
 interface ChatMessage {
   id: string;
@@ -622,8 +624,10 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       case "cv_review":       return <CVReviewCard metadata={meta as any} onSendAction={sendAction} />;
       case "email_review":    return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} />;
       case "application_sent":return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} />;
-      case "interview_ready": return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
-      case "cv_selection":    return <CVSelectionCard metadata={meta as any} onSendAction={sendAction} />;
+      case "interview_ready":          return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
+      case "cv_selection":             return <CVSelectionCard metadata={meta as any} onSendAction={sendAction} />;
+      case "cv_improvements_suggested":return <CVImprovementActionCard onSendAction={sendAction} />;
+      case "cv_improved":              return <CVImprovedCard metadata={meta as any} onSendAction={sendAction} />;
       default: return null;
     }
   }

@@ -105,6 +105,9 @@ async def process_chat_message(
             cv_id, _, json_str = rest.partition(":")
             result = await _handle_edit_cv(user_id, cv_id.strip(), json_str.strip(), db)
 
+        elif message == "__APPLY_CV_IMPROVEMENTS__":
+            result = await _handle_apply_cv_improvements(user_id, session_id, db)
+
         elif message.startswith("__SELECT_CV__:"):
             # Format: __SELECT_CV__:{cv_id}:{pending_intent}:{pending_context}
             rest = message[len("__SELECT_CV__:"):].strip()
@@ -156,8 +159,7 @@ async def process_chat_message(
                 )
 
             elif intent in ("cv_analysis", "cv_general"):
-                text = await _handle_cv_general_request(user_id, message, history, db)
-                result = (text, None)
+                result = await _handle_cv_general_request(user_id, message, history, db)
 
             elif intent == "interview_prep":
                 result = await _handle_interview_prep_intent(user_id, message, db)
@@ -380,6 +382,16 @@ _RE_STATUS_EXPLICIT = re.compile(
     r"|\b(application|pipeline)\s+status\b"
     r"|\bmy\s+stats?\b"
     r"|\bdashboard\s+stats?\b",
+    re.IGNORECASE,
+)
+
+# Detects when the user wants improvements applied (used to show "Apply" button)
+_RE_IMPROVEMENT_REQUEST = re.compile(
+    r"\b(improve|fix|enhance|rewrite|revamp|strengthen|optimize|optimise|upgrade|update)\b"
+    r"|\bwhat.{0,25}(missing|wrong|weak|lacking|improve|change|add|remove)\b"
+    r"|\bhow.{0,20}(better|improve|stronger|stronger)\b"
+    r"|\b(give me|provide|list|suggest).{0,20}(suggestions?|improvements?|recommendations?)\b"
+    r"|\b(what\s+should\s+I\s+)(add|remove|change|fix|include)\b",
     re.IGNORECASE,
 )
 
@@ -2054,8 +2066,12 @@ async def _handle_edit_cv(
 
 async def _handle_cv_general_request(
     user_id: str, message: str, history: list, db: AsyncSession
-) -> str:
-    """Route any CV question (general or explicit analysis) to the cv_general agent."""
+) -> Tuple[str, Optional[dict]]:
+    """Route any CV question (general or explicit analysis) to the cv_general agent.
+
+    Returns metadata with type='cv_improvements_suggested' when the user asked
+    for improvements, enabling the frontend to show an 'Apply' action button.
+    """
     from sqlalchemy import select
     from app.db.models import UserCV
     from app.agents.cv_general import answer_cv_question
@@ -2067,7 +2083,8 @@ async def _handle_cv_general_request(
     if not cv or not cv.parsed_data:
         return (
             "I don't see a CV on file yet. Upload your PDF or DOCX using the button in the "
-            "left sidebar and I'll give you a full, personalised answer right away."
+            "left sidebar and I'll give you a full, personalised answer right away.",
+            None,
         )
 
     await event_bus.emit_agent_started(user_id, "cv_parser", "Reading your CV")
@@ -2086,7 +2103,158 @@ async def _handle_cv_general_request(
         )
 
     await event_bus.emit_agent_completed(user_id, "cv_parser", "CV answer ready")
-    return answer
+
+    # Show "Apply improvements" button when the user asked for changes/improvements
+    is_improvement = bool(_RE_IMPROVEMENT_REQUEST.search(message))
+    metadata = {"type": "cv_improvements_suggested"} if is_improvement else None
+    return (answer, metadata)
+
+
+async def _apply_improvements_with_llm(cv_data: dict, conversation_context: str) -> dict:
+    """Apply improvement suggestions from a conversation to the CV and return updated CV dict."""
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    llm = get_llm(task="cv_tailor")
+    cv_json = json.dumps(cv_data, indent=2)[:4500]
+
+    system = (
+        "You are an elite CV optimizer. Apply ALL improvement suggestions extracted from the "
+        "conversation to the candidate's CV and return the complete updated CV as JSON.\n\n"
+        "RULES:\n"
+        "1. Apply every concrete improvement mentioned (rewrites, additions, removals, restructuring)\n"
+        "2. Keep the EXACT same JSON structure as the input — same keys, same nesting\n"
+        "3. Improve bullets with strong action verbs + quantified achievements\n"
+        "4. If a rewrite was given verbatim, use that exact rewrite\n"
+        "5. If the conversation says 'add X skill', add it to the skills section\n"
+        "6. Return ONLY valid JSON — no explanation, no markdown fences, no commentary"
+    )
+
+    user = (
+        f"CURRENT CV (JSON):\n{cv_json}\n\n"
+        f"IMPROVEMENT CONVERSATION (extract and apply all suggestions):\n"
+        f"{conversation_context[:3500]}\n\n"
+        "Return the complete improved CV as valid JSON with the same structure."
+    )
+
+    try:
+        response = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=user)])
+        content = response.content if hasattr(response, "content") else str(response)
+        content = content.strip()
+        # Strip markdown fences
+        if content.startswith("```"):
+            for part in content.split("```"):
+                candidate = part.lstrip("json").strip()
+                if candidate.startswith("{"):
+                    content = candidate
+                    break
+        if content.endswith("```"):
+            content = content[:-3].strip()
+        return json.loads(content)
+    except Exception as e:
+        logger.error("apply_improvements_llm_error", error=str(e))
+        return cv_data  # Return original as safe fallback
+
+
+async def _handle_apply_cv_improvements(
+    user_id: str, session_id: str, db: AsyncSession
+) -> Tuple[str, Optional[dict]]:
+    """Apply CV improvement suggestions from recent chat history to the user's CV.
+
+    Flow:
+    1. Load user's original CV
+    2. Extract recent improvement conversation from chat history
+    3. Apply improvements via LLM → updated CV dict
+    4. Generate PDF
+    5. Save TailoredCV (job_id=None — general improvement)
+    6. Return cv_improved metadata card
+    """
+    from sqlalchemy import select, desc
+    from app.db.models import UserCV, TailoredCV, ChatMessage
+
+    # 1. Load original CV
+    cv_result = await db.execute(
+        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    )
+    cv = cv_result.scalar_one_or_none()
+    if not cv or not cv.parsed_data:
+        return ("I couldn't find your CV. Please upload it first.", None)
+
+    # 2. Pull recent conversation to extract improvement suggestions
+    history_result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.user_id == user_id,
+            ChatMessage.session_id == session_id,
+        )
+        .order_by(desc(ChatMessage.created_at))
+        .limit(20)
+    )
+    recent_msgs = history_result.scalars().all()
+
+    # Build conversation context: last several user+assistant messages
+    # (the cv_general responses contain the suggestions)
+    context_lines = []
+    for msg in reversed(recent_msgs):
+        if msg.content.startswith("__"):
+            continue
+        role = "User" if msg.role == "user" else "AI Coach"
+        context_lines.append(f"{role}: {msg.content[:600]}")
+    conversation_context = "\n\n".join(context_lines[-16:])  # last 8 exchanges
+
+    if not conversation_context.strip():
+        return (
+            "I couldn't find any improvement suggestions in your recent conversation. "
+            "Please ask me to review your CV first, then click 'Apply improvements'.",
+            None,
+        )
+
+    await event_bus.emit_agent_started(user_id, "cv_tailor", "Applying improvements to your CV")
+
+    # 3. Apply improvements with LLM
+    improved_cv = await _apply_improvements_with_llm(cv.parsed_data, conversation_context)
+
+    # 4. Generate PDF
+    pdf_path = None
+    pdf_bytes = None
+    try:
+        from app.agents.doc_generator import generate_cv_pdf
+        result = await generate_cv_pdf(improved_cv)
+        if isinstance(result, bytes):
+            pdf_bytes = result
+        elif isinstance(result, str):
+            pdf_path = result
+    except Exception as e:
+        logger.error("cv_improvement_pdf_error", error=str(e))
+
+    # 5. Save TailoredCV (job_id=None → general improvement)
+    personal = (improved_cv.get("personal_info") or {})
+    tcv = TailoredCV(
+        user_id=user_id,
+        original_cv_id=cv.id,
+        job_id=None,
+        tailored_data=improved_cv,
+        pdf_path=pdf_path,
+        changes_made=["General CV improvement based on AI suggestions"],
+        status="completed",
+    )
+    db.add(tcv)
+    await db.commit()
+    await db.refresh(tcv)
+
+    await event_bus.emit_agent_completed(user_id, "cv_tailor", "CV improvements applied")
+
+    # 6. Return card metadata
+    return (
+        f"Done! I've applied all the suggested improvements to your CV. "
+        f"{'A PDF has been generated — ' if (pdf_path or pdf_bytes) else ''}"
+        "You can download it or open the editor to make further tweaks.",
+        {
+            "type": "cv_improved",
+            "tailored_cv_id": tcv.id,
+            "has_pdf": bool(pdf_path or pdf_bytes),
+            "name": personal.get("name", ""),
+        },
+    )
 
 
 async def _handle_status_request(user_id: str, db: AsyncSession) -> str:

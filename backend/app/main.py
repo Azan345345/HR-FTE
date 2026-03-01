@@ -39,6 +39,15 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass  # Column already exists
 
+        # Make tailored_cvs.job_id nullable to allow general CV improvements (no specific job)
+        if is_postgres:
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE tailored_cvs ALTER COLUMN job_id DROP NOT NULL"
+                ))
+            except Exception:
+                pass  # Already nullable or column doesn't exist
+
     # Start Gmail watcher
     from app.agents.gmail_watcher import gmail_watcher
     await gmail_watcher.start()
