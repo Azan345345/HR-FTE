@@ -5,6 +5,7 @@ Action prefixes (__TAILOR_APPLY__:, etc.) are programmatic button-click handlers
 """
 
 import os
+import re
 import structlog
 import json
 import time
@@ -321,61 +322,180 @@ def _format_user_context(ctx: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Fast Keyword Pre-Classifier (deterministic, runs before LLM) ──────────────
+
+_CONTINUATION_SET = frozenset({
+    "yes", "ok", "okay", "proceed", "continue", "go", "do it", "sure",
+    "send", "send it", "confirm", "approve", "sounds good", "alright",
+    "yep", "yup", "next", "go ahead", "absolutely", "correct", "right",
+    "great", "perfect", "done", "please", "let's go", "start",
+})
+
+_RE_JOB_SEARCH = re.compile(
+    r"\b(find|search|look|get|fetch|discover|show|list)\b.{0,25}\bjobs?\b"
+    r"|\bjobs?\s+in\s+\w"
+    r"|\bjob\s+(opportunities|openings|listings|vacancies)\b"
+    r"|\b(find|get|show)\s+me\s+(some\s+)?(?:jobs?|roles?|positions?|openings?)\b"
+    r"|\b(looking|searching|hunting)\s+for\s+\w+\s+jobs?\b"
+    r"|\b(software|developer|engineer|designer|product|data|backend|frontend|full.?stack|senior|junior|devops|ml|ai|python|react|node)\s+(developer|engineer|manager|analyst|architect|lead)\s+jobs?\b",
+    re.IGNORECASE,
+)
+
+_RE_AUTO_APPLY = re.compile(
+    r"\b(apply\s+to\s+all|auto(mate|matic(ally)?)\s+apply|apply\s+for\s+me|run\s+the\s+pipeline"
+    r"|do\s+everything\s+for\s+me|send\s+to\s+all\s+companies|apply\s+automatically)\b",
+    re.IGNORECASE,
+)
+
+_RE_CV_TAILOR = re.compile(
+    r"\b(tailor|customize|customise|adapt|modify|adjust|optimise|optimize)\b.{0,25}\b(cv|resume)\b",
+    re.IGNORECASE,
+)
+
+_RE_CV_UPLOAD = re.compile(
+    r"\b(upload|add|attach|change|update|replace|submit)\b.{0,20}\b(cv|resume)\b",
+    re.IGNORECASE,
+)
+
+_RE_INTERVIEW = re.compile(
+    r"\b(interview\s+prep|prepare\s+(?:me\s+)?for\s+(?:the\s+)?interview"
+    r"|mock\s+interview|practice\s+(?:interview\s+)?questions"
+    r"|behavioral\s+questions|technical\s+interview|prep\s+for\s+interview)\b",
+    re.IGNORECASE,
+)
+
+# Only trigger cv_analysis for EXPLICIT requests — never for general questions
+_RE_CV_ANALYSIS = re.compile(
+    r"\b(analyz[ei]|review|score|evaluate|assess|critique|rate|audit)\b.{0,25}\b(my\s+)?(cv|resume|profile)\b"
+    r"|\b(my\s+)?(cv|resume|profile)\b.{0,25}\b(analysis|review|score|feedback|rating|critique|assessment)\b"
+    r"|\bwhat.{0,20}wrong\b.{0,20}\b(cv|resume)\b"
+    r"|\bhow\s+(good|bad|strong|weak)\s+is\s+my\s+(cv|resume)\b",
+    re.IGNORECASE,
+)
+
+# Only explicit status/count questions — not "show me my jobs"
+_RE_STATUS_EXPLICIT = re.compile(
+    r"\b(how\s+many\s+(?:applications?|jobs?|CVs?))\b"
+    r"|\b(application|pipeline)\s+status\b"
+    r"|\bmy\s+stats?\b"
+    r"|\bdashboard\s+stats?\b",
+    re.IGNORECASE,
+)
+
+# Questions about existing saved jobs / applications (route to rich status, not search)
+_RE_MY_JOBS = re.compile(
+    r"\b(show|list|what|which|tell me about|view)\b.{0,30}\b(my\s+)?(saved|discovered|found|applied|pending|recent)\b.{0,20}\bjobs?\b"
+    r"|\b(my\s+)?(jobs?|applications?)\b.{0,20}\b(I\s+)?(applied|found|discovered|saved|have)\b"
+    r"|\bwhat\s+jobs?\s+(?:did\s+I|have\s+I|do\s+I)\b"
+    r"|\bmy\s+applications?\b"
+    r"|\bapplied\s+(?:jobs?|positions?)\b",
+    re.IGNORECASE,
+)
+
+
+def _keyword_classify(message: str) -> Optional[str]:
+    """Deterministic keyword pre-classifier — returns intent or None to fall back to LLM.
+
+    Order matters: more specific patterns are checked before broader ones.
+    Only returns an intent when highly confident. Ambiguous messages → None → LLM.
+    """
+    msg_stripped = message.strip()
+    msg_lower = msg_stripped.lower()
+    tokens = set(msg_lower.split())
+
+    # 1. Continuation — short unambiguous approval words
+    if msg_lower in _CONTINUATION_SET:
+        return "continuation"
+    if len(tokens) <= 3 and tokens & _CONTINUATION_SET and len(msg_lower) < 30:
+        return "continuation"
+
+    # 2. Explicit full-pipeline automation
+    if _RE_AUTO_APPLY.search(msg_stripped):
+        return "automated_apply"
+
+    # 3. CV operations (specific, explicit)
+    if _RE_CV_TAILOR.search(msg_stripped):
+        return "cv_tailor"
+    if _RE_CV_UPLOAD.search(msg_stripped):
+        return "cv_upload"
+    if _RE_CV_ANALYSIS.search(msg_stripped):
+        return "cv_analysis"
+
+    # 4. Interview prep (explicit phrases only)
+    if _RE_INTERVIEW.search(msg_stripped):
+        return "interview_prep"
+
+    # 5. Questions about existing saved jobs/applications
+    if _RE_MY_JOBS.search(msg_stripped):
+        return "status"
+
+    # 6. Explicit status/count questions
+    if _RE_STATUS_EXPLICIT.search(msg_stripped):
+        return "status"
+
+    # 7. Job search (broad — must come after status to avoid false positives)
+    if _RE_JOB_SEARCH.search(msg_stripped):
+        return "job_search"
+
+    # Ambiguous — let LLM decide
+    return None
+
+
 # ── Intent Classifier ─────────────────────────────────────────────────────────
 
 async def _classify_intent(llm, message: str, history: list = None) -> str:
-    """Classify user intent with chain-of-thought reasoning over full conversation context."""
+    """Two-stage intent classification:
+    1. Fast deterministic keyword pre-classifier (regex) — handles obvious cases instantly.
+    2. LLM with chain-of-thought — only for genuinely ambiguous messages.
+    """
+    # Stage 1: keyword classifier (never misclassifies obvious cases)
+    keyword_intent = _keyword_classify(message)
+    if keyword_intent:
+        logger.debug("supervisor_keyword_intent", intent=keyword_intent, message=message[:80])
+        return keyword_intent
+
+    # Stage 2: LLM for ambiguous messages
     history_block = "(no prior messages)"
     if history:
-        recent = [m for m in history[-12:] if not m["content"].startswith("__")][-8:]
+        recent = [m for m in history[-10:] if not m["content"].startswith("__")][-6:]
         if recent:
             history_block = "\n".join(
-                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:300]}"
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:250]}"
                 for m in recent
             )
 
-    prompt = f"""You are the intent router for CareerAgent, an elite AI job-application assistant.
-Your job: read the user's LATEST message and classify it into exactly ONE intent.
+    prompt = f"""You are the intent router for CareerAgent — an AI job application assistant.
+Classify the LATEST user message into EXACTLY ONE of these intents:
 
-AVAILABLE INTENTS (choose exactly one):
-  job_search       — user wants to find / search / discover jobs, roles, or positions
-  cv_upload        — user wants to upload or manage their CV/resume file
-  cv_tailor        — user wants to tailor or customize their CV for a specific job
-  interview_prep   — user wants interview preparation, practice questions, mock interviews
-  cv_analysis      — user wants their CV analyzed, scored, reviewed, or improved
-  status           — user wants to check their application status, pipeline, or statistics
-  continuation     — user is approving, confirming, or continuing the current in-progress task
-  automated_apply  — user wants to automate the FULL apply pipeline end-to-end for multiple jobs
-  general          — career advice, salary questions, help using the tool, or anything else
+  job_search       — finding / searching for new jobs or roles
+  cv_upload        — uploading or replacing a CV file
+  cv_tailor        — tailoring/customising CV for a specific job
+  interview_prep   — interview preparation, practice questions, mock interview
+  cv_analysis      — analysing, reviewing, or scoring an existing CV
+  status           — asking about saved jobs, applications, pipeline state
+  continuation     — confirming / approving / continuing an in-progress task
+  automated_apply  — full automated end-to-end apply pipeline
+  general          — career advice, salary info, how the tool works, or anything else NOT above
 
-DECISION RULES (apply in strict priority order):
-1. CONTINUATION — if message is purely: "yes", "ok", "continue", "proceed", "go", "do it", "sure",
-   "send", "send it", "confirm", "approve", "next", "sounds good", "alright", "yep", "go ahead" → continuation
-2. JOB_SEARCH — any mention of finding/searching/discovering/looking for jobs, roles, positions,
-   companies to apply to, or job opportunities → job_search
-3. AUTOMATED_APPLY — "apply to all", "automate", "do everything", "apply automatically",
-   "run the pipeline", "apply for me to all jobs", "send to all companies" → automated_apply
-4. CV_TAILOR — "tailor my CV", "customize my resume", "adapt CV for this job" → cv_tailor
-5. INTERVIEW_PREP — "interview", "prepare for", "practice questions", "mock interview",
-   "behavioral questions", "what will they ask" → interview_prep
-6. CV_ANALYSIS — "analyze my CV", "review my resume", "score my CV", "improve my profile",
-   "what's wrong with my CV", "CV feedback" → cv_analysis
-7. STATUS — "my applications", "how many applied", "pipeline status", "dashboard",
-   "what's happening", "track my applications" → status
-8. CV_UPLOAD — "upload my CV", "add my resume", "change my CV file" → cv_upload
-9. GENERAL — everything else: career advice, salary questions, how the tool works, etc.
+⚠️  CRITICAL RULES — read carefully:
+- Return "general" for ANY question about careers, salary, market trends, tech stacks, company info,
+  best practices, tips, etc. — even if it mentions jobs in passing.
+- Return "cv_analysis" ONLY if the user explicitly asks to ANALYSE or REVIEW THEIR OWN CV.
+  Do NOT return cv_analysis for general career questions.
+- Return "status" ONLY for questions about jobs/applications the user has ALREADY found or applied to.
+  Do NOT return status for general questions.
+- Return "job_search" ONLY when the user explicitly wants to FIND NEW jobs right now.
 
 CONVERSATION HISTORY:
 {history_block}
 
-LATEST USER MESSAGE: "{message}"
+USER MESSAGE: "{message}"
 
-Think briefly, then return ONLY the intent label (one word, lowercase, no punctuation)."""
+Return ONLY the intent label — one word, lowercase, no punctuation, nothing else."""
 
     try:
         response = await llm.ainvoke(prompt)
         content = response.content if hasattr(response, "content") else str(response)
-        # Strip chain-of-thought if LLM added any — take last word on last non-empty line
         lines = [ln.strip() for ln in content.strip().splitlines() if ln.strip()]
         raw = lines[-1] if lines else content.strip()
         intent = raw.lower().replace('"', "").replace("'", "").split()[-1]
@@ -383,7 +503,9 @@ Think briefly, then return ONLY the intent label (one word, lowercase, no punctu
             "job_search", "cv_upload", "cv_tailor", "interview_prep",
             "cv_analysis", "status", "continuation", "automated_apply", "general",
         }
-        return intent if intent in valid else "general"
+        result = intent if intent in valid else "general"
+        logger.debug("supervisor_llm_intent", intent=result, message=message[:80])
+        return result
     except Exception:
         return "general"
 
@@ -1945,28 +2067,93 @@ async def _handle_cv_analysis_request(user_id: str, db: AsyncSession) -> str:
 
 
 async def _handle_status_request(user_id: str, db: AsyncSession) -> str:
-    from sqlalchemy import select, func
-    from app.db.models import UserCV, Job, JobSearch, Application
+    from sqlalchemy import select, func, desc
+    from app.db.models import UserCV, Job, JobSearch, Application, HRContact
 
+    await event_bus.emit_agent_started(user_id, "supervisor", "Loading your pipeline data")
+
+    # CV count
     cv_count = (await db.execute(
         select(func.count(UserCV.id)).where(UserCV.user_id == user_id)
     )).scalar() or 0
 
-    job_count = (await db.execute(
+    # Total jobs found
+    job_count_total = (await db.execute(
         select(func.count(Job.id)).join(JobSearch).where(JobSearch.user_id == user_id)
     )).scalar() or 0
 
-    app_count = (await db.execute(
-        select(func.count(Application.id)).where(Application.user_id == user_id)
-    )).scalar() or 0
-
-    return (
-        f"📊 **Your Dashboard:**\n\n"
-        f"📄 CVs uploaded: **{cv_count}**\n"
-        f"💼 Jobs found: **{job_count}**\n"
-        f"📨 Applications: **{app_count}**\n\n"
-        f"Visit the Dashboard page for detailed analytics."
+    # Top jobs by match score (most relevant first)
+    jobs_result = await db.execute(
+        select(Job).join(JobSearch)
+        .where(JobSearch.user_id == user_id)
+        .order_by(Job.match_score.desc().nulls_last(), Job.created_at.desc())
+        .limit(10)
     )
+    top_jobs = jobs_result.scalars().all()
+
+    # Applications with status breakdown
+    apps_result = await db.execute(
+        select(Application).where(Application.user_id == user_id)
+        .order_by(Application.created_at.desc()).limit(12)
+    )
+    apps = apps_result.scalars().all()
+    app_count = len(apps)
+
+    status_counts: dict = {}
+    for a in apps:
+        status_counts[a.status] = status_counts.get(a.status, 0) + 1
+
+    # ── Build response ─────────────────────────────────────────────────────────
+    lines = [f"## 📊 Your CareerAgent Pipeline\n"]
+    lines.append(
+        f"**{cv_count}** CV · **{job_count_total}** jobs discovered · **{app_count}** applications filed\n"
+    )
+
+    # Top discovered jobs
+    if top_jobs:
+        lines.append("### 💼 Top Discovered Jobs")
+        for j in top_jobs[:8]:
+            hr_icon = "✅" if j.source not in ("not_found",) else "❌"
+            score = f"{int(j.match_score)}%" if j.match_score else "—"
+            loc = j.location or "Remote/Unspecified"
+            jtype = f" · {j.job_type}" if j.job_type else ""
+            lines.append(f"- **{j.title}** @ {j.company} · {loc}{jtype} · {score} match")
+        if job_count_total > 8:
+            lines.append(f"  *…and {job_count_total - 8} more jobs in your search history*")
+
+    # Application breakdown
+    if apps:
+        lines.append("\n### 📨 Applications Breakdown")
+        STATUS_LABEL = {
+            "pending_approval": "⏳ Awaiting your approval",
+            "cv_approved": "✅ CV approved, email not yet sent",
+            "sent": "📩 Email sent to HR",
+            "send_failed": "❌ Send failed",
+            "draft": "📝 Draft",
+        }
+        for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
+            label = STATUS_LABEL.get(status, status.replace("_", " ").title())
+            lines.append(f"- {label}: **{count}**")
+
+    # Recommended next actions
+    lines.append("\n### 🚀 Recommended Next Steps")
+    pending = status_counts.get("pending_approval", 0)
+    sent = status_counts.get("sent", 0)
+    unapplied = job_count_total - app_count
+
+    if pending:
+        lines.append(f"- **{pending}** application(s) need your approval — scroll up to the CV review card and click **Approve**")
+    if sent:
+        lines.append(f"- **{sent}** application(s) sent — type **'prepare me for interview'** to start prep")
+    if unapplied > 0:
+        lines.append(f"- **{unapplied}** discovered job(s) not yet applied to — click **'Tailor CV & Apply'** on any job card")
+    if job_count_total == 0:
+        lines.append("- No jobs found yet — type **'find me [role] jobs in [location]'** to start")
+    if cv_count == 0:
+        lines.append("- Upload your CV first using the **sidebar upload button**")
+
+    await event_bus.emit_agent_completed(user_id, "supervisor", "Pipeline status loaded")
+    return "\n".join(lines)
 
 
 
