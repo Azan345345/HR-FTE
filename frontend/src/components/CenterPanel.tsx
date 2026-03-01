@@ -180,12 +180,14 @@ function AgentBubble({
 const SOURCE_META: Record<string, { icon: string; color: string }> = {
   indeed:      { icon: "🟦", color: "bg-blue-50 border-blue-100 text-blue-700" },
   linkedin:    { icon: "🔗", color: "bg-sky-50 border-sky-100 text-sky-700" },
-  google_jobs: { icon: "🔴", color: "bg-red-50 border-red-100 text-red-700" },
+  google_jobs: { icon: "🌐", color: "bg-green-50 border-green-100 text-green-700" },
   jsearch:     { icon: "🟡", color: "bg-amber-50 border-amber-100 text-amber-700" },
 };
 
 function SourceSection({ source }: { source: StreamSource }) {
   const meta = SOURCE_META[source.key] || { icon: "🔍", color: "bg-slate-50 border-slate-100 text-slate-600" };
+  // Hide sources that finished with 0 results — no point showing an empty row
+  if (!source.searching && source.jobs.length === 0) return null;
   return (
     <div className="space-y-1.5">
       <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-semibold ${meta.color}`}>
@@ -437,7 +439,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const { jobStream, clearJobStream } = useAgentStore();
+  const { jobStream } = useAgentStore();
 
   const sessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => { sessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -496,8 +498,6 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
     setMessages((prev) => [...prev, newMsg]);
     setIsSending(true);
-    // Reset any previous job stream when user sends a new message
-    clearJobStream();
 
     try {
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();

@@ -159,13 +159,7 @@ async def process_chat_message(
                 result = (text, None)
 
             elif intent == "interview_prep":
-                result = (
-                    "I can help you prepare for your interview! After applying to a job, "
-                    "click **'Prep Interview'** on the application confirmation card. "
-                    "I'll generate technical questions, behavioral questions, company research, "
-                    "and salary negotiation tips tailored to that role.",
-                    None,
-                )
+                result = await _handle_interview_prep_intent(user_id, message, db)
 
             elif intent == "status":
                 text = await _handle_status_request(user_id, db)
@@ -1602,6 +1596,53 @@ async def _handle_send_email(
 
     await event_bus.emit_agent_completed(user_id, "email_sender", "Email sent")
     return (text, metadata)
+
+
+# ── Interview Prep Intent (natural language → find job → prep) ────────────────
+
+async def _handle_interview_prep_intent(
+    user_id: str, message: str, db: AsyncSession
+) -> Tuple[str, Optional[dict]]:
+    """Route a natural language 'interview prep' request to the actual prep handler.
+
+    Looks for the most recent job the user applied to (or just searched for)
+    and delegates to _handle_prep_interview.  Falls back to a helpful message
+    if no job context is available.
+    """
+    from sqlalchemy import select, desc
+    from app.db.models import Job, JobSearch, Application
+
+    # 1. Prefer a job the user already applied to (most recent application)
+    app_result = await db.execute(
+        select(Application)
+        .where(Application.user_id == user_id)
+        .order_by(desc(Application.created_at))
+        .limit(1)
+    )
+    application = app_result.scalar_one_or_none()
+    if application:
+        return await _handle_prep_interview(user_id, application.job_id, db)
+
+    # 2. Fall back to the most recently searched job
+    job_result = await db.execute(
+        select(Job)
+        .join(JobSearch)
+        .where(JobSearch.user_id == user_id)
+        .order_by(desc(Job.created_at))
+        .limit(1)
+    )
+    job = job_result.scalar_one_or_none()
+    if job:
+        return await _handle_prep_interview(user_id, job.id, db)
+
+    # 3. No job context at all
+    return (
+        "I'd love to help you prepare for an interview! "
+        "First, **search for jobs** and apply to one — "
+        "I'll then generate tailored technical questions, behavioral prep, company research, "
+        "salary insights, and a full study plan for you.",
+        None,
+    )
 
 
 # ── Interview Prep Handler ────────────────────────────────────────────────────
