@@ -273,6 +273,29 @@ Return ONLY the intent label, one word."""
         return "general"
 
 
+# ── CV session cache helper ───────────────────────────────────────────────────
+
+async def _get_cached_cv_selection(user_id: str, db: AsyncSession) -> Optional[str]:
+    """Return the CV the user picked during the most recent job search, if any.
+    Reads the last 20 assistant messages and finds the first job_results one
+    that stored a selected_cv_id.
+    """
+    from sqlalchemy import select, desc
+    from app.db.models import ChatMessage
+
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.user_id == user_id, ChatMessage.role == "assistant")
+        .order_by(desc(ChatMessage.created_at))
+        .limit(20)
+    )
+    for msg in result.scalars().all():
+        meta = msg.metadata_ or {}
+        if meta.get("type") == "job_results" and meta.get("selected_cv_id"):
+            return meta["selected_cv_id"]
+    return None
+
+
 # ── Multi-CV selection helper ─────────────────────────────────────────────────
 
 async def _maybe_ask_cv_selection(
@@ -550,6 +573,7 @@ Return ONLY valid JSON."""
         "type": "job_results",
         "search_id": search_id,
         "jobs": saved_jobs,
+        "selected_cv_id": selected_cv_id or cv_id,   # remembered for tailor step
     })
 
 
@@ -933,7 +957,11 @@ async def _handle_tailor_apply(
     if not job:
         return ("Job not found. Please search for jobs first.", None)
 
-    # ── Multi-CV check: ask user to pick if they have more than one ───────────
+    # ── Recall CV chosen during job search — never ask twice ─────────────────
+    if not selected_cv_id:
+        selected_cv_id = await _get_cached_cv_selection(user_id, db)
+
+    # ── Multi-CV check: only prompts if no CV was ever selected yet ───────────
     sel_text, sel_meta = await _maybe_ask_cv_selection(
         user_id, db, "tailor", job_id, selected_cv_id
     )

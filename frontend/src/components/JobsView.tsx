@@ -4,9 +4,9 @@ import {
   Briefcase, MapPin, Building2, Clock, CheckCircle2,
   MessageCircle, ExternalLink, Search, Sparkles, Brain, Send,
   ChevronDown, DollarSign, Layers, RefreshCw, X, TrendingUp,
-  Bookmark, Filter, ChevronRight
+  Bookmark, Filter, ChevronRight, FileText
 } from "lucide-react";
-import { listJobs, listApplications, sendChatMessage } from "@/services/api";
+import { listJobs, listApplications, sendChatMessage, downloadTailoredCV } from "@/services/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface JobsViewProps {
@@ -246,6 +246,16 @@ export function JobsView({ onNavigateToInterview }: JobsViewProps) {
             </div>
 
             <div className="flex items-center gap-1">
+              {/* View tailored CV PDF — shown on applied cards that have one */}
+              {isApplication && item.tailored_cv_id && (
+                <button
+                  onClick={() => downloadTailoredCV(item.tailored_cv_id).catch(console.error)}
+                  className="h-7 px-2.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 text-[10px] font-bold hover:bg-rose-100 transition-all flex items-center gap-1"
+                  title="View tailored CV PDF"
+                >
+                  <FileText size={10} /> CV
+                </button>
+              )}
               {onNavigateToInterview && (
                 <button
                   onClick={() => onNavigateToInterview(jobId)}

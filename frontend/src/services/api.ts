@@ -44,6 +44,19 @@ export function setPrimaryCV(cvId: string) {
     return api<any>(`/cv/${cvId}/set-primary`, { method: "PATCH", token: getToken() });
 }
 
+export async function downloadTailoredCV(tailoredCvId: string): Promise<void> {
+    const token = getToken();
+    const API_BASE = (import.meta as any).env?.VITE_API_URL || "";
+    const response = await fetch(`${API_BASE}/api/cv/tailored/${tailoredCvId}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) throw new Error("CV download failed");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 export function tailorCV(jobId: string, cvId?: string) {
     return api<any>("/cv/tailor", {
         method: "POST",
