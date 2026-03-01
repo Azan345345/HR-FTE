@@ -33,6 +33,7 @@ export function useWebSocket(token: string | null) {
     const {
         setAgentStatus, setActiveAgent, addCompletedNode, addLog, updateLastLogStatus,
         startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone,
+        jobStreamUniqueJobs, jobStreamHRStatus,
     } = useAgentStore();
 
     const connect = useCallback(() => {
@@ -230,6 +231,22 @@ export function useWebSocket(token: string | null) {
                             data.after as number,
                             data.removed as number,
                         );
+                    } else if (phase === "unique_jobs") {
+                        jobStreamUniqueJobs((data.jobs as StreamJob[]) || []);
+                    }
+                    break;
+                }
+
+                case "hr_stream": {
+                    const phase = data.phase as string;
+                    const company = data.company as string;
+                    const title = data.job_title as string;
+                    if (phase === "searching") {
+                        jobStreamHRStatus(company, title, "searching");
+                    } else if (phase === "found") {
+                        jobStreamHRStatus(company, title, "found", data.email as string);
+                    } else if (phase === "not_found") {
+                        jobStreamHRStatus(company, title, "not_found");
                     }
                     break;
                 }
@@ -241,7 +258,7 @@ export function useWebSocket(token: string | null) {
                     break;
             }
         },
-        [setAgentStatus, setActiveAgent, addCompletedNode, startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone]
+        [setAgentStatus, setActiveAgent, addCompletedNode, startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone, jobStreamUniqueJobs, jobStreamHRStatus]
     );
 
     useEffect(() => {

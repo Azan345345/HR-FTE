@@ -55,6 +55,31 @@ async def find_hr_contact(
     company: str,
     job_title: str,
     company_domain: Optional[str] = None,
+    user_id: str = "unknown",
+) -> dict:
+    """Find HR contact and emit real-time stream events."""
+    from app.core.event_bus import event_bus
+
+    await event_bus.emit(user_id, "hr_stream", {
+        "phase": "searching",
+        "company": company,
+        "job_title": job_title,
+    })
+    result = await _find_hr_contact_impl(company, job_title, company_domain)
+    found = bool(result.get("hr_email"))
+    await event_bus.emit(user_id, "hr_stream", {
+        "phase": "found" if found else "not_found",
+        "company": company,
+        "job_title": job_title,
+        "email": result.get("hr_email", ""),
+    })
+    return result
+
+
+async def _find_hr_contact_impl(
+    company: str,
+    job_title: str,
+    company_domain: Optional[str] = None,
 ) -> dict:
     """Find a real, verified HR contact. Never fabricates."""
     from app.config import settings

@@ -258,6 +258,23 @@ Return ONLY JSON."""
     })
     logger.info("after_dedup", before=len(all_jobs), after=len(unique_jobs))
 
+    # Emit the full unique jobs list for the center panel display
+    await event_bus.emit(user_id, "jobs_stream", {
+        "phase": "unique_jobs",
+        "jobs": [
+            {
+                "title": j.get("title", ""),
+                "company": j.get("company", ""),
+                "location": j.get("location", ""),
+                "job_type": j.get("job_type", ""),
+                "salary_range": j.get("salary_range", ""),
+                "application_url": j.get("application_url", ""),
+                "source": j.get("source", ""),
+            }
+            for j in unique_jobs
+        ],
+    })
+
     # 7. CV-based scoring
     if cv_data:
         unique_jobs = await _score_jobs_against_cv(unique_jobs, cv_data)

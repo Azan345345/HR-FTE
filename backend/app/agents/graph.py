@@ -253,7 +253,11 @@ def build_workflow() -> StateGraph:
         if not job:
             return {"current_agent": "hr_finder"}
             
-        contact = await find_hr_contact(job.get("company", ""), job.get("title", ""))
+        contact = await find_hr_contact(
+            job.get("company", ""),
+            job.get("title", ""),
+            user_id=state.get("user_id", "unknown"),
+        )
         msg = f"\n✅ **Recruiter Found**: {contact.get('name', 'HR Team')} ({contact.get('email')})"
         
         return {

@@ -35,6 +35,8 @@ export interface JobStreamState {
     deduplicating: boolean;
     dedupResult?: { before: number; after: number; removed: number };
     active: boolean; // set false when final results arrive
+    uniqueJobs: StreamJob[];
+    hrStatuses: Record<string, { status: "searching" | "found" | "not_found"; email?: string }>;
 }
 export type AgentName =
     | "supervisor"
@@ -82,6 +84,8 @@ interface AgentStoreState {
     jobStreamBatch: (key: string, label: string, jobs: StreamJob[]) => void;
     jobStreamDeduplicating: () => void;
     jobStreamDedupDone: (before: number, after: number, removed: number) => void;
+    jobStreamUniqueJobs: (jobs: StreamJob[]) => void;
+    jobStreamHRStatus: (company: string, title: string, status: "searching" | "found" | "not_found", email?: string) => void;
     clearJobStream: () => void;
 }
 
@@ -152,7 +156,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
         set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [], jobStream: null }),
 
     startJobStream: () =>
-        set({ jobStream: { sources: [], deduplicating: false, active: true } }),
+        set({ jobStream: { sources: [], deduplicating: false, active: true, uniqueJobs: [], hrStatuses: {} } }),
 
     jobStreamSourceStart: (key, label) =>
         set((state) => {
@@ -192,9 +196,27 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             : state
         ),
 
-    clearJobStream: () =>
+    jobStreamUniqueJobs: (jobs) =>
         set((state) => state.jobStream
-            ? { jobStream: { ...state.jobStream, active: false } }
+            ? { jobStream: { ...state.jobStream, uniqueJobs: jobs } }
             : state
         ),
+
+    jobStreamHRStatus: (company, title, status, email) =>
+        set((state) => {
+            if (!state.jobStream) return state;
+            const key = `${company}|${title}`;
+            return {
+                jobStream: {
+                    ...state.jobStream,
+                    hrStatuses: {
+                        ...state.jobStream.hrStatuses,
+                        [key]: { status, email },
+                    },
+                },
+            };
+        }),
+
+    clearJobStream: () =>
+        set({ jobStream: null }),
 }));

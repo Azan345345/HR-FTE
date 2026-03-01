@@ -7,7 +7,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { sendChatMessage, getChatHistory } from "@/services/api";
-import { useAgentStore, JobStreamState, StreamSource } from "@/stores/agent-store";
+import { useAgentStore, JobStreamState, StreamSource, StreamJob } from "@/stores/agent-store";
 import { JobResultsCard } from "./chat-cards/JobResultsCard";
 import { CVReviewCard } from "./chat-cards/CVReviewCard";
 import { EmailReviewCard } from "./chat-cards/EmailReviewCard";
@@ -227,11 +227,14 @@ function SourceSection({ source }: { source: StreamSource }) {
 
 function LiveJobStreamPanel({ stream }: { stream: JobStreamState }) {
   const totalFound = stream.sources.reduce((n, s) => n + s.jobs.length, 0);
+  const hasUniqueJobs = stream.uniqueJobs.length > 0;
+  const hrStatuses = stream.hrStatuses;
+
   return (
     <motion.div
       initial={{ opacity: 0, x: -16, y: 8 }}
       animate={{ opacity: 1, x: 0, y: 0 }}
-      className="max-w-[85%]"
+      className="max-w-[90%]"
     >
       <div className="flex items-center gap-2 mb-2 opacity-70">
         <AgentAvatar />
@@ -239,55 +242,115 @@ function LiveJobStreamPanel({ stream }: { stream: JobStreamState }) {
         <span className="text-[10px] text-slate-400">· Live</span>
       </div>
       <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-4 py-4 shadow-sm space-y-4">
-        {/* Header */}
-        <div className="flex items-center gap-2">
-          <Search size={13} className="text-primary" />
-          <span className="text-[13px] font-semibold text-slate-800">Searching for jobs…</span>
-          {totalFound > 0 && (
-            <span className="ml-auto text-[11px] font-bold text-primary">{totalFound} found so far</span>
-          )}
-        </div>
 
-        {/* Per-source sections */}
-        {stream.sources.map(source => (
-          <SourceSection key={source.key} source={source} />
-        ))}
+        {/* ── Search sources header ── */}
+        {!hasUniqueJobs && (
+          <>
+            <div className="flex items-center gap-2">
+              <Search size={13} className="text-primary" />
+              <span className="text-[13px] font-semibold text-slate-800">Searching for jobs…</span>
+              {totalFound > 0 && (
+                <span className="ml-auto text-[11px] font-bold text-primary">{totalFound} found so far</span>
+              )}
+            </div>
 
-        {/* No sources yet — searching spinner */}
-        {stream.sources.length === 0 && (
-          <div className="flex items-center gap-2 text-slate-400">
-            <Loader2 size={13} className="animate-spin" />
-            <span className="text-[12px]">Connecting to job sources…</span>
-          </div>
+            {stream.sources.map(source => (
+              <SourceSection key={source.key} source={source} />
+            ))}
+
+            {stream.sources.length === 0 && (
+              <div className="flex items-center gap-2 text-slate-400">
+                <Loader2 size={13} className="animate-spin" />
+                <span className="text-[12px]">Connecting to job sources…</span>
+              </div>
+            )}
+          </>
         )}
 
-        {/* Deduplication */}
+        {/* ── Deduplication status ── */}
         {stream.deduplicating && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex items-center gap-2 pt-2 border-t border-slate-100"
-          >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="flex items-center gap-2 pt-2 border-t border-slate-100">
             <GitMerge size={13} className="text-amber-500 animate-pulse" />
             <span className="text-[12px] text-slate-600">
               Deduplicating {totalFound} jobs across {stream.sources.length} sources…
             </span>
           </motion.div>
         )}
-        {stream.dedupResult && !stream.deduplicating && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex items-center gap-2 pt-2 border-t border-slate-100"
-          >
+        {stream.dedupResult && !stream.deduplicating && !hasUniqueJobs && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="flex items-center gap-2 pt-2 border-t border-slate-100">
             <CheckCircle2 size={13} className="text-green-500" />
             <span className="text-[12px] text-slate-600">
-              Removed <strong>{stream.dedupResult.removed}</strong> duplicate
-              {stream.dedupResult.removed !== 1 ? "s" : ""} →{" "}
+              Removed <strong>{stream.dedupResult.removed}</strong> duplicate{stream.dedupResult.removed !== 1 ? "s" : ""} →{" "}
               <strong className="text-primary">{stream.dedupResult.after}</strong> unique jobs
             </span>
           </motion.div>
         )}
+
+        {/* ── Unique jobs list (after dedup) with HR status ── */}
+        {hasUniqueJobs && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 pb-1">
+              <CheckCircle2 size={13} className="text-green-500" />
+              <span className="text-[13px] font-semibold text-slate-800">
+                {stream.uniqueJobs.length} unique jobs found
+              </span>
+              {stream.dedupResult && (
+                <span className="text-[11px] text-slate-400 ml-1">
+                  ({stream.dedupResult.removed} duplicate{stream.dedupResult.removed !== 1 ? "s" : ""} removed)
+                </span>
+              )}
+              {Object.keys(hrStatuses).length > 0 && (
+                <span className="ml-auto text-[11px] font-semibold text-indigo-600 flex items-center gap-1">
+                  <Mail size={10} /> Finding HR contacts…
+                </span>
+              )}
+            </div>
+            <AnimatePresence>
+              {stream.uniqueJobs.map((job, i) => {
+                const key = `${job.company}|${job.title}`;
+                const hr = hrStatuses[key];
+                return (
+                  <motion.div
+                    key={`unique-${i}`}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2, delay: i * 0.03 }}
+                    className="flex items-center gap-2.5 p-2.5 bg-slate-50 rounded-xl border border-slate-100"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 text-[10px] font-bold text-slate-500 uppercase shadow-sm">
+                      {(job.company || "?").slice(0, 2)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[12px] font-semibold text-slate-800 truncate">{job.title}</p>
+                      <p className="text-[11px] text-slate-500 truncate">{job.company}{job.location ? ` · ${job.location}` : ""}</p>
+                    </div>
+                    {/* HR status indicator */}
+                    {!hr && (
+                      <div className="w-5 h-5 rounded-full bg-slate-100 shrink-0" />
+                    )}
+                    {hr?.status === "searching" && (
+                      <Loader2 size={14} className="text-indigo-400 animate-spin shrink-0" title="Searching for HR email…" />
+                    )}
+                    {hr?.status === "found" && (
+                      <div className="flex items-center gap-1 shrink-0" title={hr.email}>
+                        <Mail size={12} className="text-green-500" />
+                        <span className="text-[10px] text-green-600 font-semibold max-w-[80px] truncate">{hr.email}</span>
+                      </div>
+                    )}
+                    {hr?.status === "not_found" && (
+                      <div className="w-5 h-5 rounded-full bg-red-50 border border-red-200 flex items-center justify-center shrink-0" title="HR email not found">
+                        <span className="text-red-500 text-[11px] font-bold leading-none">✕</span>
+                      </div>
+                    )}
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+          </div>
+        )}
+
       </div>
     </motion.div>
   );
@@ -433,12 +496,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
     setMessages((prev) => [...prev, newMsg]);
     setIsSending(true);
+    // Reset any previous job stream when user sends a new message
+    clearJobStream();
 
     try {
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
       const resp = await sendChatMessage(text, targetSessionId);
       if (!activeSessionId) onSessionCreated(targetSessionId);
-      clearJobStream(); // hide live stream panel once final response arrives
       setMessages((prev) => [
         ...prev,
         {
@@ -674,12 +738,11 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           );
         })}
 
-        {/* Live job stream OR generic thinking indicator */}
-        {(isSending || isUploading) && (
-          jobStream?.active
-            ? <LiveJobStreamPanel stream={jobStream} />
-            : <ThinkingBubble />
-        )}
+        {/* Live job stream — persists until cleared, independent of loading state */}
+        {jobStream?.active && <LiveJobStreamPanel stream={jobStream} />}
+
+        {/* Generic thinking indicator — only when NOT streaming jobs */}
+        {(isSending || isUploading) && !jobStream?.active && <ThinkingBubble />}
 
         <div ref={chatEndRef} />
       </div>
