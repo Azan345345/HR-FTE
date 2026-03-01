@@ -90,6 +90,8 @@ _allowed_origins = _default_origins + [u.strip() for u in _frontend_url.split(",
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
+    # Allow any Vercel preview/production URL so re-deployments don't break CORS
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
