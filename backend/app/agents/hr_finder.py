@@ -331,8 +331,10 @@ async def _apify_contact_scraper(company: str, domain: str, api_key: str) -> Opt
 async def _search_prospeo(company: str, domain: str, api_key: str) -> Optional[dict]:
     """Use Prospeo Search Person + Enrich Person APIs to find a verified HR email.
 
-    1. Search Person API filters by company website + Human Resources department.
-    2. Enrich the top results to reveal their verified work email.
+    Guards against non-existent / stale emails with three layers:
+      A) Only accept Prospeo status == "VERIFIED" (not UNVERIFIED or RISKY)
+      B) Email domain must belong to the searched company domain
+      C) MX record check confirms the domain actually receives mail
 
     Docs:
       https://prospeo.io/api-docs/search-person
@@ -345,99 +347,128 @@ async def _search_prospeo(company: str, domain: str, api_key: str) -> Optional[d
         "Content-Type": "application/json",
     }
 
+    # Strip 'www.' so domain matching works for both forms
+    bare_domain = domain.lstrip("www.")
+
     async with httpx.AsyncClient(timeout=30) as client:
         # ── Step 1: search for HR people at this company domain ──────────────
-        search_payload = {
-            "page": 1,
-            "filters": {
-                "company": {
-                    "websites": {"include": [domain]},
-                },
-                "person_department": {
-                    "include": ["Human Resources"],
+        # Include senior HR roles first — they are more likely to have verified
+        # emails in Prospeo's DB.  A second pass without seniority runs if needed.
+        for search_payload in [
+            {
+                "page": 1,
+                "filters": {
+                    "company": {"websites": {"include": [bare_domain]}},
+                    "person_department": {"include": ["Human Resources"]},
+                    "person_seniority": {
+                        "include": ["Manager", "Director", "Head", "Vice President", "Senior"]
+                    },
                 },
             },
-        }
-
-        try:
-            resp = await client.post(
-                "https://api.prospeo.io/search-person",
-                headers=_headers,
-                json=search_payload,
-            )
-            resp.raise_for_status()
-            search_data = resp.json()
-        except Exception as e:
-            logger.debug("prospeo_search_request_failed", domain=domain, error=str(e))
-            return None
-
-        if search_data.get("error") or not search_data.get("results"):
-            return None
-
-        results = search_data["results"]
-
-        # ── Step 2: enrich top 3 candidates to reveal their email ───────────
-        for result in results[:3]:
-            person = result.get("person", {})
-            person_id = person.get("person_id")
-            if not person_id:
-                continue
-
+            {
+                "page": 1,
+                "filters": {
+                    "company": {"websites": {"include": [bare_domain]}},
+                    "person_department": {"include": ["Human Resources"]},
+                },
+            },
+        ]:
             try:
-                enrich_resp = await client.post(
-                    "https://api.prospeo.io/enrich-person",
+                resp = await client.post(
+                    "https://api.prospeo.io/search-person",
                     headers=_headers,
-                    json={
-                        "only_verified_email": True,
-                        "data": {"person_id": person_id},
-                    },
+                    json=search_payload,
                 )
-                enrich_resp.raise_for_status()
-                enrich_data = enrich_resp.json()
+                resp.raise_for_status()
+                search_data = resp.json()
             except Exception as e:
-                logger.debug("prospeo_enrich_request_failed", person_id=person_id, error=str(e))
-                continue
+                logger.debug("prospeo_search_request_failed", domain=bare_domain, error=str(e))
+                return None
 
-            if enrich_data.get("error"):
-                continue
+            if search_data.get("error") or not search_data.get("results"):
+                continue  # try broader search next
 
-            ep = enrich_data.get("person", {})
-            email_obj = ep.get("email", {})
-            email = (email_obj.get("email") or "").strip().lower()
-            email_status = email_obj.get("status", "")
-            email_revealed = email_obj.get("revealed", False)
+            results = search_data["results"]
 
-            # Only accept a fully revealed email
-            if not email_revealed or not email or "@" not in email or "*" in email:
-                continue
+            # ── Step 2: enrich top 5 candidates ─────────────────────────────
+            for result in results[:5]:
+                person = result.get("person", {})
+                person_id = person.get("person_id")
+                if not person_id:
+                    continue
 
-            full_name = (
-                ep.get("full_name")
-                or f"{ep.get('first_name', '')} {ep.get('last_name', '')}".strip()
-                or "HR Professional"
-            )
-            job_title = ep.get("current_job_title") or "HR Professional"
-            linkedin = ep.get("linkedin_url") or ""
-            confidence = (
-                0.95 if email_status == "VERIFIED"
-                else 0.70 if email_status == "UNVERIFIED"
-                else 0.50
-            )
+                try:
+                    enrich_resp = await client.post(
+                        "https://api.prospeo.io/enrich-person",
+                        headers=_headers,
+                        json={
+                            "only_verified_email": True,
+                            "data": {"person_id": person_id},
+                        },
+                    )
+                    enrich_resp.raise_for_status()
+                    enrich_data = enrich_resp.json()
+                except Exception as e:
+                    logger.debug("prospeo_enrich_request_failed", person_id=person_id, error=str(e))
+                    continue
 
-            logger.info(
-                "prospeo_email_found",
-                company=company, domain=domain,
-                email=email, status=email_status,
-            )
-            return {
-                "hr_name": full_name,
-                "hr_email": email,
-                "hr_title": job_title,
-                "hr_linkedin": linkedin,
-                "confidence_score": confidence,
-                "source": "prospeo",
-                "verified": email_status == "VERIFIED",
-            }
+                if enrich_data.get("error"):
+                    continue
+
+                ep = enrich_data.get("person", {})
+                email_obj = ep.get("email", {})
+                email = (email_obj.get("email") or "").strip().lower()
+                email_status = email_obj.get("status", "")
+                email_revealed = email_obj.get("revealed", False)
+
+                # ── Guard A: must be revealed (no masking asterisks) ─────────
+                if not email_revealed or not email or "@" not in email or "*" in email:
+                    continue
+
+                # ── Guard B: Prospeo status must be VERIFIED ─────────────────
+                if email_status != "VERIFIED":
+                    logger.debug(
+                        "prospeo_skip_unverified",
+                        email=email, status=email_status,
+                    )
+                    continue
+
+                # ── Guard C: email domain must belong to the target company ──
+                email_domain = email.split("@", 1)[1].lstrip("www.")
+                if bare_domain not in email_domain and email_domain not in bare_domain:
+                    logger.debug(
+                        "prospeo_skip_domain_mismatch",
+                        email_domain=email_domain, expected=bare_domain,
+                    )
+                    continue
+
+                # ── Guard D: MX record confirms domain accepts mail ───────────
+                if not await _verify_email_domain(email):
+                    logger.debug("prospeo_skip_no_mx", email=email)
+                    continue
+
+                full_name = (
+                    ep.get("full_name")
+                    or f"{ep.get('first_name', '')} {ep.get('last_name', '')}".strip()
+                    or "HR Professional"
+                )
+                job_title = ep.get("current_job_title") or "HR Professional"
+                linkedin = ep.get("linkedin_url") or ""
+
+                logger.info(
+                    "prospeo_email_verified",
+                    company=company, domain=bare_domain,
+                    email=email, title=job_title,
+                )
+                return {
+                    "hr_name": full_name,
+                    "hr_email": email,
+                    "hr_title": job_title,
+                    "hr_linkedin": linkedin,
+                    "confidence_score": 0.95,
+                    "source": "prospeo",
+                    "verified": True,
+                }
 
     return None
 
