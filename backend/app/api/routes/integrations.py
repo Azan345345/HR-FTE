@@ -63,9 +63,12 @@ async def save_google_credentials(
     flag_modified(current_user, "preferences")
     await db.commit()
 
-    # Also update the live settings object so OAuth works immediately
-    settings.GOOGLE_OAUTH_CLIENT_ID = client_id
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = client_secret
+    # Also update the live settings object so OAuth works immediately (best-effort)
+    try:
+        object.__setattr__(settings, "GOOGLE_OAUTH_CLIENT_ID", client_id)
+        object.__setattr__(settings, "GOOGLE_OAUTH_CLIENT_SECRET", client_secret)
+    except Exception:
+        pass  # DB save already succeeded; live update is just a convenience
 
     return {"status": "saved"}
 
