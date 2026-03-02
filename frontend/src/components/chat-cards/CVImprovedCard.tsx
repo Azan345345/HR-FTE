@@ -2,6 +2,7 @@ import { Download, Edit3, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
+import { useAuthStore } from "@/hooks/useAuth";
 
 interface CVImprovedMeta {
   type: "cv_improved";
@@ -19,7 +20,7 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
   const { tailored_cv_id, name } = metadata;
 
   const handleDownload = async () => {
-    const token = localStorage.getItem("token");
+    const token = useAuthStore.getState().token;
     const url = `/api/cv/tailored/${tailored_cv_id}/download`;
     try {
       const res = await fetch(url, {
