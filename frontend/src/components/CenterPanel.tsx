@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import {
   Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
   Pencil, Sparkles, Search, FileText, Mail, Zap, Bot, Loader2, CheckCircle2, GitMerge,
@@ -527,6 +528,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const [slashIndex, setSlashIndex] = useState(0);
   const [activeCommand, setActiveCommand] = useState<SlashCommand | null>(null);
   const [attachedFile, setAttachedFile] = useState<{ name: string; content: string } | null>(null);
+  const [floatingEditMeta, setFloatingEditMeta] = useState<Record<string, any> | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -631,7 +633,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "⚠️ Couldn't reach the backend. Make sure it's running on `http://localhost:8080`.",
+          content: "⚠️ Couldn't reach the backend. Please try again in a moment.",
           time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
         },
       ]);
@@ -646,6 +648,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
       const resp = await sendChatMessage(action, targetSessionId);
       if (!activeSessionId) onSessionCreated(targetSessionId);
+
+      // cv_review with auto_open_edit: don't add a card to chat — just open the modal silently
+      if (resp.metadata?.type === "cv_review" && resp.metadata?.auto_open_edit) {
+        setFloatingEditMeta(resp.metadata);
+        return;
+      }
+
       setMessages((prev) => [
         ...prev,
         {
@@ -706,12 +715,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     if (fileInputRef.current) fileInputRef.current.value = "";
 
     if (file.size > 5 * 1024 * 1024) {
-      alert("File is too large. Max 5MB allowed.");
+      toast.error("File is too large. Max 5 MB allowed.");
       return;
     }
     const ext = file.name.split(".").pop()?.toLowerCase();
     if (!["pdf", "docx", "txt", "md"].includes(ext || "")) {
-      alert("Supported: PDF, DOCX, TXT, MD");
+      toast.error("Unsupported file type. Please attach a PDF, DOCX, TXT, or MD file.");
       return;
     }
 
@@ -719,11 +728,10 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     try {
       const { uploadChatContext } = await import("@/services/api");
       const resp = await uploadChatContext(file);
-      // Store in state — will be sent with the next user message
       setAttachedFile({ name: file.name, content: resp.content });
       inputRef.current?.focus();
     } catch (err: any) {
-      alert(`Failed to read ${file.name}: ${err.message || "Unknown error"}`);
+      toast.error(err.message || `Could not read ${file.name}. Try saving as .txt and re-attaching.`);
     } finally {
       setIsUploading(false);
     }
@@ -1046,6 +1054,19 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           </div>
         </div>
       </div>
+      {/* Floating edit modal — renders outside chat history so no card appears in the feed */}
+      {floatingEditMeta && (
+        <div className="hidden">
+          <CVReviewCard
+            key={floatingEditMeta.tailored_cv_id}
+            metadata={floatingEditMeta as any}
+            onSendAction={(action) => {
+              setFloatingEditMeta(null);
+              sendAction(action);
+            }}
+          />
+        </div>
+      )}
     </main>
   );
 }

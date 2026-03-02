@@ -36,8 +36,11 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
       link.download = name
         ? `Tailored_CV_${name.replace(/\s+/g, "_")}.pdf`
         : "Tailored_CV.pdf";
+      link.style.display = "none";
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(link.href);
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
     } catch (err: any) {
       toast.error(err.message || "Could not download the PDF.", {
         duration: 6000,
