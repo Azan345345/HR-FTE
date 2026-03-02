@@ -191,7 +191,7 @@ async def upload_context(
                 import PyPDF2
                 reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
                 extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
-            except ImportError:
+            except Exception:
                 extracted = content_bytes.decode("utf-8", errors="replace")
         elif ext == "docx":
             import io
@@ -199,7 +199,7 @@ async def upload_context(
                 import docx
                 doc = docx.Document(io.BytesIO(content_bytes))
                 extracted = "\n".join(p.text for p in doc.paragraphs)
-            except ImportError:
+            except Exception:
                 extracted = content_bytes.decode("utf-8", errors="replace")
     except Exception as e:
         extracted = f"[Could not extract text: {str(e)}]"

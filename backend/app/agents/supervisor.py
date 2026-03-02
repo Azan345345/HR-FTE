@@ -78,27 +78,36 @@ async def process_chat_message(
     result: Tuple[str, Optional[dict]] = ("", None)
     _t0 = time.monotonic()
 
+    # ── Strip [ATTACHED FILE:] block for handlers that don't use it ──────────
+    # interview_prep explicitly parses the block; all other handlers receive
+    # only the user's plain-text intent so they don't choke on 6000-char dumps.
+    def _strip_file_block(msg: str) -> str:
+        if "[ATTACHED FILE:" not in msg:
+            return msg
+        clean = msg.split("[ATTACHED FILE:", 1)[0].strip()
+        return clean or "Please process my attached file."
+
     try:
         # ── Slash-command pipeline override (bypasses LLM intent detection) ──
         if pipeline and not message.startswith("__"):
             history = await _load_conversation_history(user_id, session_id, db, limit=25)
             if pipeline == "job_search":
-                result = await _handle_job_search_v2(user_id, session_id, message, db)
+                result = await _handle_job_search_v2(user_id, session_id, _strip_file_block(message), db)
             elif pipeline == "cv_general":
-                result = await _handle_cv_general_request(user_id, message, history, db)
+                result = await _handle_cv_general_request(user_id, _strip_file_block(message), history, db)
             elif pipeline == "cv_tailor":
-                result = await _handle_cv_tailor_intent(user_id, message, db)
+                result = await _handle_cv_tailor_intent(user_id, _strip_file_block(message), db)
             elif pipeline == "hr_finder":
-                result = await _handle_hr_finder_standalone(user_id, message, db)
+                result = await _handle_hr_finder_standalone(user_id, _strip_file_block(message), db)
             elif pipeline == "interview_prep":
-                result = await _handle_interview_prep_intent(user_id, message, db)
+                result = await _handle_interview_prep_intent(user_id, message, db)  # keeps full block
             elif pipeline == "automated_apply":
-                result = await _handle_auto_pipeline(user_id, message, db, session_id=session_id)
+                result = await _handle_auto_pipeline(user_id, _strip_file_block(message), db, session_id=session_id)
             elif pipeline == "cv_analysis":
-                result = await _handle_cv_general_request(user_id, message, history, db)
+                result = await _handle_cv_general_request(user_id, _strip_file_block(message), history, db)
             else:
                 llm = get_llm(task="supervisor_routing")
-                text = await _general_response(llm, message, history, user_id=user_id, db=db)
+                text = await _general_response(llm, _strip_file_block(message), history, user_id=user_id, db=db)
                 result = (text, None)
 
         # ── Action Prefix Routing (programmatic card button clicks) ──────────
@@ -158,20 +167,21 @@ async def process_chat_message(
         else:
             # ── Load conversation history for context-aware responses ─────────
             history = await _load_conversation_history(user_id, session_id, db, limit=25)
+            clean_msg = _strip_file_block(message)
 
             # ── Natural Language Intent Routing ──────────────────────────────
             llm = get_llm(task="supervisor_routing")
-            intent = await _classify_intent(llm, message, history)
-            logger.info("supervisor_intent", intent=intent, message=message[:100])
+            intent = await _classify_intent(llm, clean_msg, history)
+            logger.info("supervisor_intent", intent=intent, message=clean_msg[:100])
 
             if intent == "continuation":
-                result = await _handle_continuation(user_id, session_id, history, db, message=message)
+                result = await _handle_continuation(user_id, session_id, history, db, message=clean_msg)
 
             elif intent == "job_search":
-                result = await _handle_job_search_v2(user_id, session_id, message, db)
+                result = await _handle_job_search_v2(user_id, session_id, clean_msg, db)
 
             elif intent == "cv_tailor":
-                result = await _handle_cv_tailor_intent(user_id, message, db)
+                result = await _handle_cv_tailor_intent(user_id, clean_msg, db)
 
             elif intent == "cv_upload":
                 result = (
@@ -182,20 +192,20 @@ async def process_chat_message(
                 )
 
             elif intent in ("cv_analysis", "cv_general"):
-                result = await _handle_cv_general_request(user_id, message, history, db)
+                result = await _handle_cv_general_request(user_id, clean_msg, history, db)
 
             elif intent == "interview_prep":
-                result = await _handle_interview_prep_intent(user_id, message, db)
+                result = await _handle_interview_prep_intent(user_id, message, db)  # keeps full block
 
             elif intent == "status":
                 text = await _handle_status_request(user_id, db)
                 result = (text, None)
 
             elif intent == "automated_apply":
-                result = await _handle_auto_pipeline(user_id, message, db, session_id=session_id)
+                result = await _handle_auto_pipeline(user_id, clean_msg, db, session_id=session_id)
 
             else:
-                text = await _general_response(llm, message, history, user_id=user_id, db=db)
+                text = await _general_response(llm, clean_msg, history, user_id=user_id, db=db)
                 result = (text, None)
 
     except Exception as e:
@@ -1960,7 +1970,7 @@ Job Description: \"\"\"{clean_message[:800]}\"\"\""""
 
         # Create a temporary Job record so _handle_prep_interview can run
         from app.db.models import JobSearch as JobSearchModel
-        search = JobSearchModel(user_id=user_id, query=f"interview prep for {title}", location="")
+        search = JobSearchModel(user_id=user_id, search_query=f"interview prep for {title}", target_location="")
         db.add(search)
         await db.flush()
 
