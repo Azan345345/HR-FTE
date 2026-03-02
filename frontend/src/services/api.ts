@@ -15,8 +15,7 @@ export async function uploadCV(file: File) {
     formData.append("file", file);
 
     const token = getToken();
-    const API_BASE = (import.meta as any).env?.VITE_API_URL || "";
-    const response = await fetch(`${API_BASE}/api/cv/upload`, {
+    const response = await fetch(`/api/cv/upload`, {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
@@ -46,8 +45,7 @@ export function setPrimaryCV(cvId: string) {
 
 export async function downloadTailoredCV(tailoredCvId: string): Promise<void> {
     const token = getToken();
-    const API_BASE = (import.meta as any).env?.VITE_API_URL || "";
-    const response = await fetch(`${API_BASE}/api/cv/tailored/${tailoredCvId}/download`, {
+    const response = await fetch(`/api/cv/tailored/${tailoredCvId}/download`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!response.ok) throw new Error("CV download failed");
@@ -148,8 +146,7 @@ export async function uploadChatContext(file: File) {
     formData.append("file", file);
 
     const token = getToken();
-    const API_BASE = (import.meta as any).env?.VITE_API_URL || "";
-    const response = await fetch(`${API_BASE}/api/chat/upload-context`, {
+    const response = await fetch(`/api/chat/upload-context`, {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,

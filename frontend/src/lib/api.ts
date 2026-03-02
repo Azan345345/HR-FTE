@@ -1,5 +1,6 @@
-// In dev: use Vite proxy (relative URL, no CORS). In prod: use VITE_API_URL env.
-const API_BASE = (import.meta as any).env?.VITE_API_URL || "";
+// Relative base: Vite dev proxy handles /api → localhost:8080 (vite.config.ts).
+// Vercel prod proxy handles /api → Railway backend (vercel.json rewrites).
+const API_BASE = "";
 
 interface FetchOptions extends RequestInit {
     token?: string;
