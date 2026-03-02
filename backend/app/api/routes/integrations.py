@@ -180,10 +180,9 @@ async def get_integration_status(
             services["google_gmail"] = True
             services["google_drive"] = True
 
-    # Fallback: env-level refresh token counts as connected
-    if not services["google_gmail"] and (
-        current_user.google_refresh_token or settings.GOOGLE_REFRESH_TOKEN
-    ):
+    # Only count user's own stored token — env-level token is a global fallback
+    # for sending and must NOT show as per-user connection status.
+    if not services["google_gmail"] and current_user.google_refresh_token:
         services["google_gmail"] = True
 
     return {"integrations": services}
