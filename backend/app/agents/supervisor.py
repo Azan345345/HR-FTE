@@ -1225,6 +1225,7 @@ Job Description: \"\"\"{message[:800]}\"\"\""""
         description=message,
         location="",
         job_type="Full-time",
+        source="manual",
         match_score=0,
     )
     db.add(job)
