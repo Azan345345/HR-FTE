@@ -1910,16 +1910,77 @@ async def _handle_send_email(
 async def _handle_interview_prep_intent(
     user_id: str, message: str, db: AsyncSession
 ) -> Tuple[str, Optional[dict]]:
-    """Route a natural language 'interview prep' request to the actual prep handler.
+    """Route an interview prep request.
 
-    Looks for the most recent job the user applied to (or just searched for)
-    and delegates to _handle_prep_interview.  Falls back to a helpful message
-    if no job context is available.
+    Priority:
+      1. Message contains a job description (from /interview slash command) —
+         optionally with an [ATTACHED FILE:] block for the candidate's CV.
+         Creates a temporary Job record and runs prep against it.
+      2. Most recent application in DB.
+      3. Most recently searched job in DB.
+      4. Fallback message asking the user to search first.
     """
     from sqlalchemy import select, desc
-    from app.db.models import Job, JobSearch, Application
+    from app.db.models import Job, JobSearch, Application, JobSearch as JS
 
-    # 1. Prefer a job the user already applied to (most recent application)
+    # ── Parse [ATTACHED FILE:] block if present ───────────────────────────────
+    attached_cv_text: Optional[str] = None
+    clean_message = message
+    if "[ATTACHED FILE:" in message:
+        parts = message.split("[ATTACHED FILE:", 1)
+        clean_message = parts[0].strip()
+        attached_cv_text = parts[1].strip() if len(parts) > 1 else None
+        # Strip the filename line from the top of the CV block
+        if attached_cv_text:
+            cv_lines = attached_cv_text.splitlines()
+            # First line is "filename]", skip it
+            if cv_lines and cv_lines[0].endswith("]"):
+                attached_cv_text = "\n".join(cv_lines[1:]).strip()
+
+    # ── If message has meaningful content treat it as a job description ───────
+    job_description_provided = len(clean_message.strip()) > 40
+
+    if job_description_provided:
+        # Extract title + company from description via LLM
+        llm = get_llm(task="supervisor_routing")
+        extract_prompt = f"""Extract job title and company name from this job description.
+Return ONLY JSON: {{"title": "...", "company": "..."}}
+If company is not mentioned, set it to "Unknown Company".
+Job Description: \"\"\"{clean_message[:800]}\"\"\""""
+        try:
+            resp = await llm.ainvoke(extract_prompt)
+            content = resp.content if hasattr(resp, "content") else str(resp)
+            json_match = re.search(r'\{[^{}]+\}', content, re.DOTALL)
+            meta = json.loads(json_match.group()) if json_match else {}
+        except Exception:
+            meta = {}
+
+        title   = (meta.get("title") or "Unknown Role").strip()
+        company = (meta.get("company") or "Unknown Company").strip()
+
+        # Create a temporary Job record so _handle_prep_interview can run
+        from app.db.models import JobSearch as JobSearchModel
+        search = JobSearchModel(user_id=user_id, query=f"interview prep for {title}", location="")
+        db.add(search)
+        await db.flush()
+
+        job = Job(
+            search_id=search.id,
+            title=title,
+            company=company,
+            description=clean_message,
+            location="",
+            job_type="Full-time",
+            match_score=0,
+        )
+        db.add(job)
+        await db.flush()
+
+        return await _handle_prep_interview(
+            user_id, job.id, db, override_cv_text=attached_cv_text
+        )
+
+    # ── Fall back to DB context ───────────────────────────────────────────────
     app_result = await db.execute(
         select(Application)
         .where(Application.user_id == user_id)
@@ -1930,7 +1991,6 @@ async def _handle_interview_prep_intent(
     if application:
         return await _handle_prep_interview(user_id, application.job_id, db)
 
-    # 2. Fall back to the most recently searched job
     job_result = await db.execute(
         select(Job)
         .join(JobSearch)
@@ -1942,12 +2002,9 @@ async def _handle_interview_prep_intent(
     if job:
         return await _handle_prep_interview(user_id, job.id, db)
 
-    # 3. No job context at all
     return (
-        "I'd love to help you prepare for an interview! "
-        "First, **search for jobs** and apply to one — "
-        "I'll then generate tailored technical questions, behavioral prep, company research, "
-        "salary insights, and a full study plan for you.",
+        "I'd love to help you prepare! Use `/interview` and paste the job description directly. "
+        "You can also attach your tailored CV via the 📎 button for personalised preparation.",
         None,
     )
 
@@ -1955,9 +2012,14 @@ async def _handle_interview_prep_intent(
 # ── Interview Prep Handler ────────────────────────────────────────────────────
 
 async def _handle_prep_interview(
-    user_id: str, job_id: str, db: AsyncSession
+    user_id: str, job_id: str, db: AsyncSession,
+    override_cv_text: Optional[str] = None,
 ) -> Tuple[str, Optional[dict]]:
-    """Generate interview prep, save to DB, return interview_ready metadata."""
+    """Generate interview prep, save to DB, return interview_ready metadata.
+
+    override_cv_text: raw CV text passed directly from /interview command attachment.
+    When provided, it takes priority over any tailored CV stored in the DB.
+    """
     from sqlalchemy import select, desc
     from app.db.models import Job, InterviewPrep, TailoredCV, Application
     from app.agents.interview_prep import generate_interview_prep
@@ -1971,22 +2033,26 @@ async def _handle_prep_interview(
         user_id, "interview_prep", f"Preparing for {job.title} at {job.company}"
     )
 
-    # Try to load tailored CV for personalized prep
+    # CV resolution: override text > tailored CV in DB > primary CV in DB
     tailored_cv_data = None
-    app_result = await db.execute(
-        select(Application)
-        .where(Application.user_id == user_id, Application.job_id == job_id)
-        .order_by(desc(Application.created_at))
-        .limit(1)
-    )
-    application = app_result.scalar_one_or_none()
-    if application and application.tailored_cv_id:
-        tc_result = await db.execute(
-            select(TailoredCV).where(TailoredCV.id == application.tailored_cv_id)
+    if override_cv_text:
+        # Wrap the raw text so generate_interview_prep can use it
+        tailored_cv_data = {"raw_text": override_cv_text, "source": "user_upload"}
+    else:
+        app_result = await db.execute(
+            select(Application)
+            .where(Application.user_id == user_id, Application.job_id == job_id)
+            .order_by(desc(Application.created_at))
+            .limit(1)
         )
-        tc = tc_result.scalar_one_or_none()
-        if tc:
-            tailored_cv_data = tc.tailored_data
+        application = app_result.scalar_one_or_none()
+        if application and application.tailored_cv_id:
+            tc_result = await db.execute(
+                select(TailoredCV).where(TailoredCV.id == application.tailored_cv_id)
+            )
+            tc = tc_result.scalar_one_or_none()
+            if tc:
+                tailored_cv_data = tc.tailored_data
 
     _t_prep = time.monotonic()
     prep_data = await generate_interview_prep(

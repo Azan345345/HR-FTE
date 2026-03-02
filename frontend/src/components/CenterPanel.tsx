@@ -526,6 +526,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
   const [activeCommand, setActiveCommand] = useState<SlashCommand | null>(null);
+  const [attachedFile, setAttachedFile] = useState<{ name: string; content: string } | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -578,18 +579,30 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
   const handleSend = async (overrideText?: string, overridePipeline?: string) => {
     const text = (overrideText || inputValue).trim();
-    if (!text || (isSending && !overrideText)) return;
+    if (!text && !attachedFile) return;
+    if (isSending && !overrideText) return;
 
     const pipeline = overridePipeline ?? (activeCommand?.pipeline);
+    const fileSnap = attachedFile;
+
     if (!overrideText) {
       setInputValue("");
       setActiveCommand(null);
+      setAttachedFile(null);
     }
+
+    // What gets shown in the bubble (clean, no raw content)
+    const displayText = text || (fileSnap ? `📎 ${fileSnap.name}` : "");
+
+    // What gets sent to the backend (includes file content invisibly)
+    const backendText = fileSnap
+      ? `${text ? text + "\n\n" : ""}[ATTACHED FILE: ${fileSnap.name}]\n${fileSnap.content.slice(0, 6000)}`
+      : text;
 
     const newMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: text,
+      content: displayText,
       time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
     };
 
@@ -598,7 +611,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
     try {
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
-      const resp = await sendChatMessage(text, targetSessionId, pipeline);
+      const resp = await sendChatMessage(backendText, targetSessionId, pipeline);
       if (!activeSessionId) onSessionCreated(targetSessionId);
       // Clear live stream panel when final job results card arrives — avoids duplication
       if (resp.metadata?.type === "job_results") clearJobStream();
@@ -690,6 +703,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (fileInputRef.current) fileInputRef.current.value = "";
 
     if (file.size > 5 * 1024 * 1024) {
       alert("File is too large. Max 5MB allowed.");
@@ -702,41 +716,16 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     }
 
     setIsUploading(true);
-    const tempId = crypto.randomUUID();
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: tempId,
-        role: "assistant",
-        content: `📎 Attaching **${file.name}** to context…`,
-        time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-      },
-    ]);
-
     try {
       const { uploadChatContext } = await import("@/services/api");
       const resp = await uploadChatContext(file);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === tempId
-            ? { ...m, content: `✅ Context loaded from **${file.name}**.` }
-            : m
-        )
-      );
-      await handleSend(
-        `[CONTEXT UPLOAD: ${file.name}]\n\nContent:\n${resp.content.slice(0, 5000)}\n\nPlease acknowledge this information.`
-      );
+      // Store in state — will be sent with the next user message
+      setAttachedFile({ name: file.name, content: resp.content });
+      inputRef.current?.focus();
     } catch (err: any) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === tempId
-            ? { ...m, content: `❌ Failed to load **${file.name}**: ${err.message || "Unknown error"}` }
-            : m
-        )
-      );
+      alert(`Failed to read ${file.name}: ${err.message || "Unknown error"}`);
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -949,19 +938,32 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           className="relative w-full bg-white rounded-2xl transition-all duration-200 focus-within:ring-[3px] focus-within:ring-primary/10"
           style={{ border: "1px solid rgba(0,0,0,0.09)", boxShadow: "var(--shadow-card)" }}
         >
-          {/* Active command pill */}
-          {activeCommand && (
-            <div className="flex items-center gap-2 px-4 pt-3 pb-0">
-              <div className="flex items-center gap-1.5 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-1">
-                <activeCommand.icon size={11} className="text-violet-600" />
-                <span className="text-[11px] font-semibold text-violet-700 font-mono">/{activeCommand.name}</span>
-                <span className="text-[10px] text-violet-500">{activeCommand.label}</span>
-                <button
-                  type="button"
-                  onClick={() => { setActiveCommand(null); setInputValue(""); inputRef.current?.focus(); }}
-                  className="ml-1 text-violet-400 hover:text-violet-600 transition-colors leading-none"
-                >×</button>
-              </div>
+          {/* Active command pill + attachment chip */}
+          {(activeCommand || attachedFile) && (
+            <div className="flex items-center gap-2 px-4 pt-3 pb-0 flex-wrap">
+              {activeCommand && (
+                <div className="flex items-center gap-1.5 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-1">
+                  <activeCommand.icon size={11} className="text-violet-600" />
+                  <span className="text-[11px] font-semibold text-violet-700 font-mono">/{activeCommand.name}</span>
+                  <span className="text-[10px] text-violet-500">{activeCommand.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveCommand(null); setInputValue(""); inputRef.current?.focus(); }}
+                    className="ml-1 text-violet-400 hover:text-violet-600 transition-colors leading-none"
+                  >×</button>
+                </div>
+              )}
+              {attachedFile && (
+                <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1">
+                  <Paperclip size={11} className="text-emerald-600" />
+                  <span className="text-[11px] font-semibold text-emerald-700 max-w-[180px] truncate">{attachedFile.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setAttachedFile(null); inputRef.current?.focus(); }}
+                    className="ml-1 text-emerald-400 hover:text-emerald-600 transition-colors leading-none"
+                  >×</button>
+                </div>
+              )}
             </div>
           )}
           <textarea
@@ -1030,13 +1032,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             </button>
             <button
               onClick={() => handleSend()}
-              disabled={!inputValue.trim() || isSending}
+              disabled={(!inputValue.trim() && !attachedFile) || isSending}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-semibold transition-all duration-200 active:scale-[0.96] ${
-                inputValue.trim() && !isSending
+                (inputValue.trim() || attachedFile) && !isSending
                   ? "bg-primary text-white hover:brightness-110"
                   : "bg-slate-100 text-slate-300 cursor-not-allowed"
               }`}
-              style={inputValue.trim() && !isSending ? { boxShadow: "var(--shadow-brand-sm)" } : {}}
+              style={(inputValue.trim() || attachedFile) && !isSending ? { boxShadow: "var(--shadow-brand-sm)" } : {}}
             >
               <ArrowUp size={13} />
               Send
