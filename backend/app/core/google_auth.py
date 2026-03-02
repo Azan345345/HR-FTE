@@ -86,22 +86,21 @@ async def get_google_auth_url(
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
 ) -> str:
-    """Generate Google OAuth2 authorization URL."""
-    from google_auth_oauthlib.flow import Flow
+    """Generate Google OAuth2 authorization URL (no PKCE — server-side flow with client_secret)."""
+    from urllib.parse import urlencode
 
     cid = client_id or settings.GOOGLE_OAUTH_CLIENT_ID
-    csecret = client_secret or settings.GOOGLE_OAUTH_CLIENT_SECRET
-
-    flow = Flow.from_client_config(
-        _client_config(cid, csecret),
-        scopes=scopes,
-        redirect_uri=redirect_uri,
-    )
-    kwargs: dict = {"prompt": "consent", "access_type": "offline"}
+    params = {
+        "client_id":     cid,
+        "redirect_uri":  redirect_uri,
+        "response_type": "code",
+        "scope":         " ".join(scopes),
+        "access_type":   "offline",
+        "prompt":        "consent",
+    }
     if state:
-        kwargs["state"] = state
-    auth_url, _ = flow.authorization_url(**kwargs)
-    return auth_url
+        params["state"] = state
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
 
 
 async def exchange_code_for_tokens(
