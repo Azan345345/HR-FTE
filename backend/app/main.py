@@ -91,7 +91,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     # Allow any Vercel preview/production URL so re-deployments don't break CORS
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"https://(.*\.vercel\.app|.*\.netlify\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
