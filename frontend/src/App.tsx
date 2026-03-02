@@ -8,6 +8,7 @@ import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-ro
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import GmailSetupGuide from "./pages/GmailSetupGuide";
+import ResetPassword from "./pages/ResetPassword";
 
 const queryClient = new QueryClient();
 
@@ -63,6 +64,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/gmail-setup" element={<GmailSetupGuide />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

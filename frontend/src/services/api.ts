@@ -161,6 +161,21 @@ export async function uploadChatContext(file: File) {
     return response.json() as Promise<{ filename: string; content: string }>;
 }
 
+// ── Auth Service ─────────────────────────────
+export function forgotPassword(email: string) {
+    return api<{ message: string }>("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+    });
+}
+
+export function resetPassword(token: string, new_password: string) {
+    return api<{ message: string }>("/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ token, new_password }),
+    });
+}
+
 // ── Dashboard Service ────────────────────────
 export function getDashboardStats() {
     return api<any>("/dashboard/stats", { token: getToken() });

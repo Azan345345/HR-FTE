@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, Mail, Lock, Loader2 } from "lucide-react";
+import { ArrowRight, Mail, Lock, Loader2, CheckCircle } from "lucide-react";
 import { useAuthStore } from "@/hooks/useAuth";
+import { forgotPassword } from "@/services/api";
 
 const GREETING_WORDS = "Sign in to CareerAgent".split(" ");
 
@@ -14,10 +15,29 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
   const [email, setEmail] = useState("azanmian123123@gmail.com");
   const [password, setPassword] = useState("");
   const [isLogin, setIsLogin] = useState(true);
+  const [view, setView] = useState<"auth" | "forgot" | "forgot_sent">("auth");
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotError, setForgotError] = useState("");
 
   const emailRef = useRef<HTMLInputElement>(null);
 
   const { login, signup, isLoading, error, clearError } = useAuthStore();
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!forgotEmail.trim()) return;
+    setForgotLoading(true);
+    setForgotError("");
+    try {
+      await forgotPassword(forgotEmail.trim());
+      setView("forgot_sent");
+    } catch (err: any) {
+      setForgotError(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setForgotLoading(false);
+    }
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => emailRef.current?.focus(), 2000);
@@ -139,6 +159,78 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
 
       {/* Auth form — glass card */}
       <AnimatePresence mode="wait">
+
+        {/* ── Forgot password sent ── */}
+        {view === "forgot_sent" && (
+          <motion.div
+            key="forgot-sent"
+            className="mt-8 w-[min(420px,90vw)] flex flex-col items-center gap-4 relative z-10"
+            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            style={{ background:"rgba(255,255,255,0.85)", backdropFilter:"blur(16px)", WebkitBackdropFilter:"blur(16px)", border:"1px solid rgba(255,255,255,0.80)", borderRadius:"20px", padding:"28px 24px", boxShadow:"0 8px 40px -8px rgba(0,0,0,0.12)" }}
+          >
+            <CheckCircle size={36} className="text-green-500" />
+            <p className="text-[15px] font-semibold text-slate-700 text-center">Check your inbox</p>
+            <p className="text-[13px] text-slate-500 text-center leading-relaxed">
+              If <span className="font-medium">{forgotEmail}</span> is registered, we've sent a reset link. It expires in 1 hour.
+            </p>
+            <button
+              type="button"
+              onClick={() => setView("auth")}
+              className="text-[12px] text-primary hover:underline font-medium"
+            >
+              Back to sign in
+            </button>
+          </motion.div>
+        )}
+
+        {/* ── Forgot password form ── */}
+        {view === "forgot" && (
+          <motion.form
+            key="forgot-form"
+            onSubmit={handleForgotSubmit}
+            className="mt-8 w-[min(420px,90vw)] flex flex-col gap-3 relative z-10"
+            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            style={{ background:"rgba(255,255,255,0.85)", backdropFilter:"blur(16px)", WebkitBackdropFilter:"blur(16px)", border:"1px solid rgba(255,255,255,0.80)", borderRadius:"20px", padding:"24px", boxShadow:"0 8px 40px -8px rgba(0,0,0,0.12)" }}
+          >
+            <p className="text-[14px] font-semibold text-slate-700">Reset your password</p>
+            <p className="text-[12px] text-slate-500 -mt-1">Enter your email and we'll send you a reset link.</p>
+
+            {forgotError && <p className="text-[12px] text-red-500">{forgotError}</p>}
+
+            <div className="h-12 bg-white/70 border border-black/[0.09] rounded-xl flex items-center px-4 gap-3 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white">
+              <Mail size={15} className="text-slate-400 flex-shrink-0" />
+              <input
+                type="email"
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                placeholder="Email address"
+                className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
+                required
+                autoFocus
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={!forgotEmail.trim() || forgotLoading}
+              className="h-12 mt-1 rounded-xl flex items-center justify-center gap-2 bg-primary text-white hover:brightness-110 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none transition-all"
+              style={{ boxShadow: "var(--shadow-brand-sm)" }}
+            >
+              {forgotLoading ? <Loader2 size={18} className="animate-spin" /> : (
+                <><span className="font-semibold text-[14px]">Send Reset Link</span><ArrowRight size={16} /></>
+              )}
+            </button>
+
+            <div className="text-center">
+              <button type="button" onClick={() => setView("auth")} className="text-[12px] text-slate-500 hover:text-primary transition-colors font-medium">
+                Back to sign in
+              </button>
+            </div>
+          </motion.form>
+        )}
+
+        {/* ── Main auth form ── */}
+        {view === "auth" && (
         <motion.form
           key="auth-form"
           onSubmit={handleSubmit}
@@ -183,6 +275,19 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
             />
           </div>
 
+          {/* Forgot password */}
+          {isLogin && (
+            <div className="text-right -mt-1">
+              <button
+                type="button"
+                onClick={() => { setView("forgot"); setForgotEmail(email); clearError(); }}
+                className="text-[11px] text-slate-400 hover:text-primary transition-colors"
+              >
+                Forgot password?
+              </button>
+            </div>
+          )}
+
           {/* Submit */}
           <button
             type="submit"
@@ -209,6 +314,7 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
             </button>
           </div>
         </motion.form>
+        )}
       </AnimatePresence>
 
       {/* Footer */}
