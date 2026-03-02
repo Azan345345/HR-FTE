@@ -2135,6 +2135,7 @@ async def _handle_prep_interview(
 
     # CV resolution: override text > tailored CV in DB > primary CV in DB
     tailored_cv_data = None
+    application = None
     if override_cv_text:
         # Wrap the raw text so generate_interview_prep can use it
         tailored_cv_data = {"raw_text": override_cv_text, "source": "user_upload"}
