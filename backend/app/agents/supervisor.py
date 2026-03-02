@@ -66,6 +66,7 @@ async def process_chat_message(
     session_id: str,
     message: str,
     db: AsyncSession,
+    pipeline: Optional[str] = None,
 ) -> Tuple[str, Optional[dict]]:
     """Process a user chat message and route to the appropriate handler.
 
@@ -78,8 +79,30 @@ async def process_chat_message(
     _t0 = time.monotonic()
 
     try:
+        # ── Slash-command pipeline override (bypasses LLM intent detection) ──
+        if pipeline and not message.startswith("__"):
+            history = await _load_conversation_history(user_id, session_id, db, limit=25)
+            if pipeline == "job_search":
+                result = await _handle_job_search_v2(user_id, session_id, message, db)
+            elif pipeline == "cv_general":
+                result = await _handle_cv_general_request(user_id, message, history, db)
+            elif pipeline == "cv_tailor":
+                result = await _handle_cv_tailor_intent(user_id, message, db)
+            elif pipeline == "hr_finder":
+                result = await _handle_hr_finder_standalone(user_id, message, db)
+            elif pipeline == "interview_prep":
+                result = await _handle_interview_prep_intent(user_id, message, db)
+            elif pipeline == "automated_apply":
+                result = await _handle_auto_pipeline(user_id, message, db, session_id=session_id)
+            elif pipeline == "cv_analysis":
+                result = await _handle_cv_general_request(user_id, message, history, db)
+            else:
+                llm = get_llm(task="supervisor_routing")
+                text = await _general_response(llm, message, history, user_id=user_id, db=db)
+                result = (text, None)
+
         # ── Action Prefix Routing (programmatic card button clicks) ──────────
-        if message.startswith("__TAILOR_APPLY__:"):
+        elif message.startswith("__TAILOR_APPLY__:"):
             job_id = message.split(":", 1)[1].strip()
             result = await _handle_tailor_apply(user_id, job_id, db)
 
@@ -2318,6 +2341,80 @@ async def _handle_apply_cv_improvements(
             "name": personal.get("name", ""),
         },
     )
+
+
+async def _handle_hr_finder_standalone(
+    user_id: str, message: str, db: AsyncSession
+) -> Tuple[str, Optional[dict]]:
+    """Standalone HR email finder invoked by /hr slash command.
+
+    Extracts company + role from the message with a quick LLM call, then runs
+    the hr_finder agent and formats results as markdown.
+    """
+    from app.agents.hr_finder import find_hr_contact
+
+    await event_bus.emit_agent_started(user_id, "hr_finder", "Extracting company info from your message")
+
+    llm = get_llm(task="supervisor_routing")
+    extract_prompt = f"""Extract company name, job role, and domain from this message.
+Return ONLY valid JSON: {{"company": "...", "role": "...", "domain": "..."}}
+If domain not mentioned set it to null. If role not mentioned set to empty string.
+Message: "{message}" """
+    try:
+        resp = await llm.ainvoke(extract_prompt)
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        json_match = re.search(r'\{[^{}]+\}', content, re.DOTALL)
+        data = json.loads(json_match.group()) if json_match else {}
+    except Exception:
+        data = {}
+
+    company = (data.get("company") or "").strip()
+    role    = (data.get("role") or "").strip()
+    domain  = (data.get("domain") or "").strip() or None
+
+    if not company:
+        return (
+            "Please tell me the **company name** you want to reach. For example:\n"
+            "> `/hr` Find HR email at Google for a Software Engineer role",
+            None,
+        )
+
+    await event_bus.emit_agent_started(user_id, "hr_finder", f"Searching HR contacts at {company}")
+
+    try:
+        hr_result = await find_hr_contact(company, role, company_domain=domain)
+    except Exception as exc:
+        await event_bus.emit_agent_completed(user_id, "hr_finder", "Search failed")
+        return (f"I couldn't search HR contacts for **{company}**: {exc}", None)
+
+    await event_bus.emit_agent_completed(user_id, "hr_finder", f"Search complete for {company}")
+
+    if not hr_result or not hr_result.get("hr_email"):
+        d = domain or (company.lower().replace(" ", "") + ".com")
+        prefixes = ["hr", "careers", "talent", "recruiting", "jobs"]
+        fallbacks = "\n".join(f"- `{p}@{d}`" for p in prefixes)
+        return (
+            f"I couldn't find a verified HR email for **{company}** through our sources.\n\n"
+            f"**Common pattern fallbacks to try:**\n{fallbacks}\n\n"
+            "You can also check the company's LinkedIn page or careers site.",
+            None,
+        )
+
+    lines = [f"✅ **HR contacts found for {company}**\n"]
+    lines.append(f"📧 **Primary HR email:** `{hr_result['hr_email']}`")
+
+    additional = hr_result.get("additional_emails") or []
+    if additional:
+        lines.append("\n**Additional contacts:**")
+        for c in additional[:6]:
+            email    = c.get("email", "")
+            name     = c.get("full_name") or c.get("name", "")
+            position = c.get("position", "")
+            conf     = c.get("confidence", 0)
+            label    = " — ".join(filter(None, [name, position]))
+            lines.append(f"- `{email}`{f' ({label})' if label else ''} · confidence {conf}%")
+
+    return ("\n".join(lines), None)
 
 
 async def _handle_status_request(user_id: str, db: AsyncSession) -> str:

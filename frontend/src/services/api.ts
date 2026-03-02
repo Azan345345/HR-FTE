@@ -125,11 +125,11 @@ export interface ChatMessageResponse {
 }
 
 // ── Chat Service ─────────────────────────────
-export function sendChatMessage(message: string, sessionId?: string) {
+export function sendChatMessage(message: string, sessionId?: string, pipeline?: string) {
     return api<ChatMessageResponse>("/chat/send", {
         method: "POST",
         token: getToken(),
-        body: JSON.stringify({ message, session_id: sessionId }),
+        body: JSON.stringify({ message, session_id: sessionId, pipeline }),
     });
 }
 

@@ -131,6 +131,7 @@ class ApplicationListResponse(BaseModel):
 class ChatMessageRequest(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: Optional[str] = None
+    pipeline: Optional[str] = None  # slash-command explicit pipeline override
 
 
 class ChatMessageResponse(BaseModel):

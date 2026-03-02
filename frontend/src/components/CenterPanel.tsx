@@ -432,65 +432,80 @@ interface SlashCommand {
   description: string;
   icon: React.ElementType;
   action: "fill" | "send";
-  template: string; // for "fill": text placed in input; for "send": text sent immediately
+  template: string;
+  pipeline: string;   // backend pipeline key
+  hint?: string;      // placeholder hint shown in input after command is selected
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
   {
     name: "search",
     label: "Search for jobs",
-    description: "Find matching job listings",
+    description: "Find matching job listings based on your role and location",
     icon: Search,
     action: "fill",
-    template: "Search for jobs as ",
+    template: "",
+    pipeline: "job_search",
+    hint: "e.g. Senior React Developer in New York",
   },
   {
     name: "improve",
     label: "Improve my CV",
-    description: "Get AI suggestions to strengthen your CV",
+    description: "AI suggestions to strengthen your CV + apply them in one click",
     icon: Sparkles,
     action: "send",
     template: "Improve my CV",
+    pipeline: "cv_general",
   },
   {
     name: "tailor",
     label: "Tailor CV for a job",
-    description: "Customize your CV for a specific role",
+    description: "Paste a job description — agent tailors your CV and makes it downloadable",
     icon: FileText,
     action: "fill",
-    template: "Tailor my CV for this job:\n",
+    template: "",
+    pipeline: "cv_tailor",
+    hint: "Paste the job description or job URL here…",
   },
   {
     name: "hr",
     label: "Find HR email",
-    description: "Locate HR contact for a company",
+    description: "Find HR, department head, or CEO contact email for any company",
     icon: Mail,
     action: "fill",
-    template: "Find HR email for ",
+    template: "",
+    pipeline: "hr_finder",
+    hint: "e.g. Google — Software Engineer role",
   },
   {
     name: "interview",
     label: "Interview prep",
-    description: "Practice questions & salary research",
+    description: "Paste job description (+ optionally attach your CV) — agent prepares questions, salary data & study plan",
     icon: Brain,
     action: "fill",
-    template: "Help me prepare for an interview at ",
+    template: "",
+    pipeline: "interview_prep",
+    hint: "Paste the job description here (optionally attach your tailored CV via the 📎 button)…",
   },
   {
     name: "apply",
     label: "Full auto-apply pipeline",
-    description: "Search, tailor & apply to top matches automatically",
+    description: "Search, tailor CV, find HR & send application emails automatically",
     icon: Briefcase,
-    action: "send",
-    template: "Search for jobs and automatically apply to the best matches",
+    action: "fill",
+    template: "",
+    pipeline: "automated_apply",
+    hint: "e.g. Backend Engineer roles in London — apply to top 3",
   },
   {
     name: "analyze",
     label: "Analyze my CV",
-    description: "Detailed strengths, gaps & quick wins",
+    description: "Deep analysis: strengths, gaps, ATS score & quick wins — attach a CV or uses your primary one",
     icon: Zap,
-    action: "send",
-    template: "Analyze my CV and tell me what's strong and what needs improvement",
+    action: "fill",
+    template: "",
+    pipeline: "cv_analysis",
+    hint: "Ask anything about your CV, or just press Enter for a full analysis…",
   },
 ];
 
@@ -510,6 +525,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
+  const [activeCommand, setActiveCommand] = useState<SlashCommand | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -560,11 +576,15 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
   const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
 
-  const handleSend = async (overrideText?: string) => {
+  const handleSend = async (overrideText?: string, overridePipeline?: string) => {
     const text = (overrideText || inputValue).trim();
     if (!text || (isSending && !overrideText)) return;
 
-    if (!overrideText) setInputValue("");
+    const pipeline = overridePipeline ?? (activeCommand?.pipeline);
+    if (!overrideText) {
+      setInputValue("");
+      setActiveCommand(null);
+    }
 
     const newMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -578,7 +598,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
     try {
       const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
-      const resp = await sendChatMessage(text, targetSessionId);
+      const resp = await sendChatMessage(text, targetSessionId, pipeline);
       if (!activeSessionId) onSessionCreated(targetSessionId);
       // Clear live stream panel when final job results card arrives — avoids duplication
       if (resp.metadata?.type === "job_results") clearJobStream();
@@ -652,17 +672,16 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     setSlashQuery("");
     setSlashIndex(0);
     if (cmd.action === "send") {
-      handleSend(cmd.template);
+      setActiveCommand(null);
+      handleSend(cmd.template, cmd.pipeline);
       setInputValue("");
     } else {
-      setInputValue(cmd.template);
+      setActiveCommand(cmd);
+      setInputValue("");
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.focus();
-          inputRef.current.setSelectionRange(cmd.template.length, cmd.template.length);
           inputRef.current.style.height = "auto";
-          inputRef.current.style.height =
-            Math.min(inputRef.current.scrollHeight, 160) + "px";
         }
       }, 0);
     }
@@ -930,6 +949,21 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           className="relative w-full bg-white rounded-2xl transition-all duration-200 focus-within:ring-[3px] focus-within:ring-primary/10"
           style={{ border: "1px solid rgba(0,0,0,0.09)", boxShadow: "var(--shadow-card)" }}
         >
+          {/* Active command pill */}
+          {activeCommand && (
+            <div className="flex items-center gap-2 px-4 pt-3 pb-0">
+              <div className="flex items-center gap-1.5 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-1">
+                <activeCommand.icon size={11} className="text-violet-600" />
+                <span className="text-[11px] font-semibold text-violet-700 font-mono">/{activeCommand.name}</span>
+                <span className="text-[10px] text-violet-500">{activeCommand.label}</span>
+                <button
+                  type="button"
+                  onClick={() => { setActiveCommand(null); setInputValue(""); inputRef.current?.focus(); }}
+                  className="ml-1 text-violet-400 hover:text-violet-600 transition-colors leading-none"
+                >×</button>
+              </div>
+            </div>
+          )}
           <textarea
             ref={inputRef}
             rows={1}
@@ -937,8 +971,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             onChange={(e) => {
               const val = e.target.value;
               setInputValue(val);
-              // Slash menu trigger — only when "/" is the first character
-              if (val.startsWith("/")) {
+              // Slash menu trigger — only when "/" is the first character (and no active command)
+              if (!activeCommand && val.startsWith("/")) {
                 setSlashQuery(val.slice(1));
                 setSlashMenuOpen(true);
                 setSlashIndex(0);
@@ -979,7 +1013,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
               }
             }}
             disabled={isSending}
-            placeholder="Message CareerAgent… (/ for commands, Enter to send)"
+            placeholder={activeCommand?.hint ?? "Message CareerAgent… (/ for commands, Enter to send)"}
             className="w-full px-5 pt-3.5 pb-12 bg-transparent text-[13px] text-foreground placeholder:text-slate-400 outline-none resize-none leading-relaxed disabled:opacity-50 max-h-40"
             style={{ minHeight: "52px" }}
           />

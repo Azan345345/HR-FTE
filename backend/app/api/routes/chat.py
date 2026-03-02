@@ -48,6 +48,7 @@ async def send_message(
             session_id=session_id,
             message=body.message,
             db=db,
+            pipeline=body.pipeline,
         )
         # Supervisor now returns a tuple (text, metadata)
         if isinstance(result, tuple):
