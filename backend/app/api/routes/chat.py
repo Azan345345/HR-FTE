@@ -199,8 +199,8 @@ async def upload_context(
         elif ext == "pdf":
             import io
             try:
-                import PyPDF2
-                reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
+                from pypdf import PdfReader
+                reader = PdfReader(io.BytesIO(content_bytes))
                 extracted = _clean("\n".join(page.extract_text() or "" for page in reader.pages))
             except Exception:
                 raise HTTPException(
