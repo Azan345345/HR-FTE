@@ -1149,57 +1149,145 @@ Return ONLY valid JSON."""
 async def _handle_cv_tailor_intent(
     user_id: str, message: str, db: AsyncSession
 ) -> Tuple[str, Optional[dict]]:
-    """Handle natural language 'tailor CV' intent by finding the last-searched job."""
-    from sqlalchemy import select, desc
-    from app.db.models import Job, JobSearch
+    """NL intent fallback — route to tailor-from-description."""
+    return await _handle_cv_tailor_from_description(user_id, message, db)
 
-    llm = get_llm(task="extract_job_context")
-    extract_prompt = f"""Extract company or job title from: "{message}"
-Return JSON: {{"job_keyword": "company or title or null"}}
-Return ONLY valid JSON."""
 
-    keyword = None
-    try:
-        resp = await llm.ainvoke(extract_prompt)
-        content = resp.content if hasattr(resp, "content") else str(resp)
-        keyword = json.loads(
-            content.strip().replace("```json", "").replace("```", "")
-        ).get("job_keyword")
-    except Exception:
-        pass
+async def _handle_cv_tailor_from_description(
+    user_id: str, message: str, db: AsyncSession
+) -> Tuple[str, Optional[dict]]:
+    """
+    /tailor pipeline handler.
 
-    target_job = None
-    if keyword:
-        job_query = (
-            select(Job)
-            .join(JobSearch)
-            .where(JobSearch.user_id == user_id)
-            .where((Job.title.ilike(f"%{keyword}%")) | (Job.company.ilike(f"%{keyword}%")))
-            .order_by(desc(Job.created_at))
-            .limit(1)
-        )
-        result = await db.execute(job_query)
-        target_job = result.scalar_one_or_none()
+    If the message contains a job description (>40 chars), create a temp
+    Job record and tailor the user's CV against it, then generate the PDF
+    and return a cv_improved card with a download button.
 
-    if not target_job:
-        job_query = (
-            select(Job)
-            .join(JobSearch)
-            .where(JobSearch.user_id == user_id)
-            .order_by(desc(Job.created_at))
-            .limit(1)
-        )
-        result = await db.execute(job_query)
-        target_job = result.scalar_one_or_none()
+    If there is no description, ask the user to paste one.
+    """
+    from sqlalchemy import select
+    from app.db.models import UserCV, Job, JobSearch as JobSearchModel, TailoredCV
+    from app.agents.cv_tailor import tailor_cv_for_job
+    from app.agents.doc_generator import generate_cv_pdf
 
-    if not target_job:
+    # ── Require a job description ─────────────────────────────────────────────
+    if len(message.strip()) < 40:
         return (
-            "I couldn't find a job in your history to tailor for. "
-            "Please search for jobs first, then click **'Tailor CV & Apply'** on a job card.",
+            "Please paste the **job description** (or at least the job title + company + key "
+            "requirements) so I can tailor your CV specifically for it.\n\n"
+            "Example: _/tailor then paste the full JD below_",
             None,
         )
 
-    return await _handle_tailor_apply(user_id, target_job.id, db)
+    # ── Load user CV ──────────────────────────────────────────────────────────
+    cv_result = await db.execute(
+        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    )
+    cv = cv_result.scalar_one_or_none()
+    if not cv or not cv.parsed_data:
+        return (
+            "Please **upload your CV** first using the sidebar upload button, "
+            "then use /tailor with a job description.",
+            None,
+        )
+
+    # ── Extract title + company from the description via LLM ─────────────────
+    llm = get_llm(task="supervisor_routing")
+    extract_prompt = f"""Extract job title and company name from this job description.
+Return ONLY JSON: {{"title": "...", "company": "..."}}
+If company is not mentioned, set it to "Unknown Company".
+Job Description: \"\"\"{message[:800]}\"\"\""""
+    try:
+        resp = await llm.ainvoke(extract_prompt)
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+        meta = json.loads(m.group()) if m else {}
+    except Exception:
+        meta = {}
+
+    title   = (meta.get("title")   or "Unknown Role").strip()
+    company = (meta.get("company") or "Unknown Company").strip()
+
+    # ── Create temp JobSearch + Job records ───────────────────────────────────
+    search = JobSearchModel(
+        user_id=user_id,
+        search_query=f"tailor for {title} at {company}",
+        target_location="",
+        status="completed",
+    )
+    db.add(search)
+    await db.flush()
+
+    job = Job(
+        search_id=search.id,
+        title=title,
+        company=company,
+        description=message,
+        location="",
+        job_type="Full-time",
+        match_score=0,
+    )
+    db.add(job)
+    await db.flush()
+
+    # ── Tailor CV ─────────────────────────────────────────────────────────────
+    await event_bus.emit_agent_started(
+        user_id, "cv_tailor", f"Tailoring CV for {title} at {company}"
+    )
+    job_data = {
+        "title": title,
+        "company": company,
+        "description": message,
+        "requirements": [],
+    }
+    tailoring_result = await tailor_cv_for_job(cv.parsed_data, job_data)
+    await event_bus.emit_agent_completed(user_id, "cv_tailor", f"CV tailored for {title}")
+
+    # ── Save TailoredCV ───────────────────────────────────────────────────────
+    tailored_cv = TailoredCV(
+        user_id=user_id,
+        original_cv_id=cv.id,
+        job_id=job.id,
+        tailored_data=tailoring_result.get("tailored_cv", {}),
+        cover_letter=tailoring_result.get("cover_letter"),
+        ats_score=tailoring_result.get("ats_score"),
+        match_score=tailoring_result.get("match_score"),
+        changes_made=tailoring_result.get("changes_made", []),
+        status="completed",
+    )
+    db.add(tailored_cv)
+    await db.flush()
+
+    # ── Generate PDF immediately ──────────────────────────────────────────────
+    pdf_path = None
+    candidate_name = (cv.parsed_data.get("personal_info", {}) or {}).get("name", "")
+    try:
+        await event_bus.emit_agent_started(user_id, "doc_generator", "Generating tailored CV PDF")
+        pdf_path = await generate_cv_pdf({"tailored_cv": tailoring_result.get("tailored_cv", {})})
+        tailored_cv.pdf_path = pdf_path
+        await event_bus.emit_agent_completed(user_id, "doc_generator", "PDF ready")
+    except Exception as e:
+        logger.warning("tailor_pdf_failed", error=str(e))
+
+    await db.commit()
+
+    ats_score   = tailoring_result.get("ats_score", 0) or 0
+    match_score = tailoring_result.get("match_score", 0) or 0
+
+    metadata = {
+        "type": "cv_improved",
+        "tailored_cv_id": str(tailored_cv.id),
+        "has_pdf": bool(pdf_path),
+        "name": candidate_name,
+    }
+
+    text = (
+        f"✅ Your CV has been tailored for **{title}** at **{company}**!\n\n"
+        f"🎯 ATS Score: **{ats_score}%** · Match: **{match_score}%**\n\n"
+        "Download the tailored CV PDF or open the editor to fine-tune it."
+    )
+
+    return (text, metadata)
 
 
 # ── Skip-to-next-job helper ───────────────────────────────────────────────────

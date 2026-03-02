@@ -28,16 +28,23 @@ async def send_message(
     session_id = body.session_id or str(uuid.uuid4())
     user_id = str(current_user.id)  # capture as plain str before any long agent calls
 
-    # Sanitize message — strip null bytes that PostgreSQL TEXT rejects
+    # Sanitize — strip null bytes that PostgreSQL TEXT rejects
     safe_message = body.message.replace('\x00', '').replace('\x0b', '').replace('\x0c', '')
 
-    # Save user message
+    # Display version stored in DB — strip [ATTACHED FILE:] block so chat
+    # history shows the user's clean text, not 6000 chars of file content.
+    if "[ATTACHED FILE:" in safe_message:
+        display_message = safe_message.split("[ATTACHED FILE:", 1)[0].strip() or "[File attached]"
+    else:
+        display_message = safe_message
+
+    # Save user message (clean display version)
     try:
         user_msg = ChatMessage(
             user_id=user_id,
             session_id=session_id,
             role="user",
-            content=safe_message,
+            content=display_message,
         )
         db.add(user_msg)
         await db.commit()
