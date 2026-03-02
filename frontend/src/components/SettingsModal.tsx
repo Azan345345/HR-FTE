@@ -167,7 +167,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   };
 
   const handleDisconnectGmail = async () => {
-    if (!confirm("Disconnect Gmail? The app will no longer be able to send emails on your behalf.")) return;
+    if (!confirm("Disconnect Gmail? The app will no longer be able to send emails or monitor your inbox for HR replies.")) return;
     setDisconnectingGmail(true);
     try {
       await disconnectGoogle();
@@ -392,8 +392,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
                         {!gmailConnected && (
                           <p className="text-[11px] text-slate-400 font-sans">
-                            You'll be redirected to Google's secure sign-in page. CareerAgent only
-                            requests permission to send emails — it cannot read your inbox.
+                            You'll be redirected to Google's secure sign-in page. CareerAgent requests
+                            permission to send emails on your behalf and monitor your inbox for HR replies.
                           </p>
                         )}
                       </div>
