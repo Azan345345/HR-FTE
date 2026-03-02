@@ -3,7 +3,7 @@
 import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
@@ -286,16 +286,34 @@ async def download_tailored_cv(
         select(TailoredCV).where(TailoredCV.id == tailored_cv_id, TailoredCV.user_id == current_user.id)
     )
     tcv = result.scalar_one_or_none()
-    if not tcv or not tcv.pdf_path:
-        raise HTTPException(status_code=404, detail="Tailored CV or PDF not found")
+    if not tcv:
+        raise HTTPException(status_code=404, detail="Tailored CV not found")
 
-    if not os.path.exists(tcv.pdf_path):
-        raise HTTPException(status_code=404, detail="CV file missing on server")
+    # Serve from disk if the file still exists
+    if tcv.pdf_path and os.path.exists(tcv.pdf_path):
+        return FileResponse(
+            tcv.pdf_path,
+            media_type="application/pdf",
+            filename=f"Tailored_CV_{tcv.id[:8]}.pdf",
+        )
 
-    return FileResponse(
-        tcv.pdf_path,
+    # File missing (ephemeral server restart) — regenerate from stored tailored_data
+    if not tcv.tailored_data:
+        raise HTTPException(status_code=404, detail="No CV data available to generate PDF")
+
+    try:
+        from app.agents.doc_generator import generate_cv_pdf_bytes
+        pdf_bytes = await generate_cv_pdf_bytes({"tailored_cv": tcv.tailored_data})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+
+    if not pdf_bytes:
+        raise HTTPException(status_code=500, detail="PDF generation returned empty result")
+
+    return Response(
+        content=pdf_bytes,
         media_type="application/pdf",
-        filename=f"Tailored_CV_{tcv.id[:8]}.pdf"
+        headers={"Content-Disposition": f'attachment; filename="Tailored_CV_{tcv.id[:8]}.pdf"'},
     )
 
 @router.post("/tailor", response_model=TailoredCVResponse)
