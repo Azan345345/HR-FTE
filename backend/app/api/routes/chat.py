@@ -28,15 +28,22 @@ async def send_message(
     session_id = body.session_id or str(uuid.uuid4())
     user_id = str(current_user.id)  # capture as plain str before any long agent calls
 
+    # Sanitize message — strip null bytes that PostgreSQL TEXT rejects
+    safe_message = body.message.replace('\x00', '').replace('\x0b', '').replace('\x0c', '')
+
     # Save user message
-    user_msg = ChatMessage(
-        user_id=user_id,
-        session_id=session_id,
-        role="user",
-        content=body.message,
-    )
-    db.add(user_msg)
-    await db.commit()
+    try:
+        user_msg = ChatMessage(
+            user_id=user_id,
+            session_id=session_id,
+            role="user",
+            content=safe_message,
+        )
+        db.add(user_msg)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save message: {str(e)}")
 
     # Process through supervisor agent — returns (text, metadata)
     response_text = "I'm sorry, I encountered an error. Please try again."
@@ -46,7 +53,7 @@ async def send_message(
         result = await process_chat_message(
             user_id=user_id,
             session_id=session_id,
-            message=body.message,
+            message=safe_message,
             db=db,
             pipeline=body.pipeline,
         )
@@ -181,28 +188,46 @@ async def upload_context(
     if len(content_bytes) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large. Max 5MB.")
 
+    def _clean(text: str) -> str:
+        """Strip null bytes and other characters PostgreSQL TEXT rejects."""
+        return text.replace('\x00', '').replace('\x0b', '').replace('\x0c', '')
+
     extracted = ""
     try:
-        if ext == "txt" or ext == "md":
-            extracted = content_bytes.decode("utf-8", errors="replace")
+        if ext in ("txt", "md"):
+            extracted = _clean(content_bytes.decode("utf-8", errors="replace"))
         elif ext == "pdf":
             import io
             try:
                 import PyPDF2
                 reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
-                extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
+                extracted = _clean("\n".join(page.extract_text() or "" for page in reader.pages))
             except Exception:
-                extracted = content_bytes.decode("utf-8", errors="replace")
+                raise HTTPException(
+                    status_code=422,
+                    detail="Could not extract text from the PDF. Please save it as .txt and re-attach.",
+                )
         elif ext == "docx":
             import io
             try:
                 import docx
                 doc = docx.Document(io.BytesIO(content_bytes))
-                extracted = "\n".join(p.text for p in doc.paragraphs)
+                extracted = _clean("\n".join(p.text for p in doc.paragraphs))
             except Exception:
-                extracted = content_bytes.decode("utf-8", errors="replace")
+                raise HTTPException(
+                    status_code=422,
+                    detail="Could not extract text from the DOCX. Please save it as .txt and re-attach.",
+                )
+    except HTTPException:
+        raise
     except Exception as e:
-        extracted = f"[Could not extract text: {str(e)}]"
+        raise HTTPException(status_code=422, detail=f"Could not read file: {str(e)}")
+
+    if not extracted.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="The file appears to be empty or contains no readable text.",
+        )
 
     return {"filename": filename, "content": extracted[:10000]}
 
