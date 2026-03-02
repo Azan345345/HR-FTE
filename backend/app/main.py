@@ -83,6 +83,8 @@ _default_origins = [
     "http://127.0.0.1:5174",
     "http://127.0.0.1:5175",
     "http://127.0.0.1:3000",
+    # Explicit production frontend — belt-and-suspenders alongside the regex below
+    "https://frontend-ten-mocha-80.vercel.app",
 ]
 _frontend_url = os.getenv("FRONTEND_URL", "")
 _allowed_origins = _default_origins + [u.strip() for u in _frontend_url.split(",") if u.strip()]
