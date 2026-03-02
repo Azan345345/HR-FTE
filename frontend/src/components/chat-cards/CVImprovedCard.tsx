@@ -1,4 +1,4 @@
-import { Download, Edit3, CheckCircle2, FileText } from "lucide-react";
+import { Download, Edit3, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
@@ -6,7 +6,7 @@ import { toast } from "sonner";
 interface CVImprovedMeta {
   type: "cv_improved";
   tailored_cv_id: string;
-  has_pdf: boolean;
+  has_pdf?: boolean;
   name?: string;
 }
 
@@ -16,31 +16,30 @@ interface Props {
 }
 
 export function CVImprovedCard({ metadata, onSendAction }: Props) {
-  const { tailored_cv_id, has_pdf, name } = metadata;
+  const { tailored_cv_id, name } = metadata;
 
   const handleDownload = async () => {
     const token = localStorage.getItem("token");
-    const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:8080";
-    const url = `${base}/api/cv/tailored/${tailored_cv_id}/download`;
+    const url = `/api/cv/tailored/${tailored_cv_id}/download`;
     try {
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error("Download failed");
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        const detail = errBody?.detail || `Server error ${res.status}`;
+        throw new Error(detail);
+      }
       const blob = await res.blob();
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = name
-        ? `Improved_CV_${name.replace(/\s+/g, "_")}.pdf`
-        : "Improved_CV.pdf";
+        ? `Tailored_CV_${name.replace(/\s+/g, "_")}.pdf`
+        : "Tailored_CV.pdf";
       link.click();
       URL.revokeObjectURL(link.href);
-    } catch {
-      toast.error("Could not download the PDF. The file may have been lost after a server restart.", {
-        action: {
-          label: "Regenerate",
-          onClick: () => onSendAction("__APPLY_CV_IMPROVEMENTS__"),
-        },
+    } catch (err: any) {
+      toast.error(err.message || "Could not download the PDF.", {
         duration: 6000,
       });
     }
@@ -62,22 +61,18 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
       </div>
 
       <p className="text-[12px] text-slate-500 font-sans leading-snug mb-4">
-        {has_pdf
-          ? "Your updated CV is ready. Download the PDF or open the editor to fine-tune any section."
-          : "Your updated CV data has been saved. Open the editor to review and make any final adjustments."}
+        Your updated CV is ready. Download the PDF or open the editor to fine-tune any section.
       </p>
 
       <div className="flex gap-2">
-        {has_pdf && (
-          <Button
-            size="sm"
-            className="flex-1 h-8 text-[12px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 font-sans"
-            onClick={handleDownload}
-          >
-            <Download size={12} />
-            Download PDF
-          </Button>
-        )}
+        <Button
+          size="sm"
+          className="flex-1 h-8 text-[12px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 font-sans"
+          onClick={handleDownload}
+        >
+          <Download size={12} />
+          Download PDF
+        </Button>
         <Button
           size="sm"
           variant="outline"
@@ -88,21 +83,6 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
           Edit in Modal
         </Button>
       </div>
-
-      {!has_pdf && (
-        <div className="mt-2 flex items-center justify-center gap-1.5">
-          <FileText size={9} className="text-amber-400" />
-          <p className="text-[10px] text-slate-400 font-sans">
-            PDF was lost after server restart —{" "}
-            <button
-              className="text-amber-500 hover:text-amber-600 underline font-medium transition-colors"
-              onClick={() => onSendAction("__APPLY_CV_IMPROVEMENTS__")}
-            >
-              click to regenerate
-            </button>
-          </p>
-        </div>
-      )}
     </motion.div>
   );
 }
