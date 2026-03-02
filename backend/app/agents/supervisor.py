@@ -2070,6 +2070,7 @@ Job Description: \"\"\"{clean_message[:800]}\"\"\""""
             description=clean_message,
             location="",
             job_type="Full-time",
+            source="manual",
             match_score=0,
         )
         db.add(job)
