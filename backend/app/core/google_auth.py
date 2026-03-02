@@ -111,24 +111,36 @@ async def exchange_code_for_tokens(
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
 ) -> dict:
-    """Exchange authorization code for access + refresh tokens."""
-    from google_auth_oauthlib.flow import Flow
+    """Exchange authorization code for access + refresh tokens via direct httpx POST."""
+    import httpx
 
     cid = client_id or settings.GOOGLE_OAUTH_CLIENT_ID
     csecret = client_secret or settings.GOOGLE_OAUTH_CLIENT_SECRET
 
-    flow = Flow.from_client_config(
-        _client_config(cid, csecret),
-        scopes=scopes,
-        redirect_uri=redirect_uri,
-    )
-    flow.fetch_token(code=code)
-    creds = flow.credentials
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code":          code,
+                "client_id":     cid,
+                "client_secret": csecret,
+                "redirect_uri":  redirect_uri,
+                "grant_type":    "authorization_code",
+            },
+        )
+
+    body = resp.json()
+    logger.info("google_token_exchange_response", status=resp.status_code, keys=list(body.keys()))
+
+    if resp.status_code != 200:
+        error_desc = body.get("error_description") or body.get("error") or str(body)
+        raise ValueError(f"Google token exchange failed ({resp.status_code}): {error_desc}")
+
     return {
-        "access_token":  creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri":     creds.token_uri,
-        "client_id":     creds.client_id,
-        "client_secret": creds.client_secret,
-        "expiry":        creds.expiry.isoformat() if creds.expiry else None,
+        "access_token":  body.get("access_token"),
+        "refresh_token": body.get("refresh_token"),
+        "token_uri":     "https://oauth2.googleapis.com/token",
+        "client_id":     cid,
+        "client_secret": csecret,
+        "expiry":        None,
     }

@@ -38,11 +38,14 @@ function GmailOAuthHandler() {
       params.delete("gmail_connected");
       navigate({ search: params.toString() }, { replace: true });
     } else if (error) {
+      const detail = params.get("detail");
+      const baseMsg = GMAIL_ERROR_MESSAGES[error] ?? `Error: ${error}`;
       toast.error("Gmail connection failed", {
-        description: GMAIL_ERROR_MESSAGES[error] ?? `Error: ${error}`,
-        duration: 8000,
+        description: detail ? `${baseMsg}\n\nDetail: ${detail}` : baseMsg,
+        duration: 12000,
       });
       params.delete("gmail_error");
+      params.delete("detail");
       navigate({ search: params.toString() }, { replace: true });
     }
   }, [location.search, navigate]);

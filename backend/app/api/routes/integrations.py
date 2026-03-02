@@ -116,8 +116,13 @@ async def google_oauth_backend_callback(
             scopes=GOOGLE_SCOPES,
         )
     except Exception as exc:
-        logger.error("google_oauth_token_exchange_failed", error=str(exc), user_id=user_id)
-        return RedirectResponse(f"{frontend}/?gmail_error=token_exchange_failed", status_code=302)
+        error_detail = str(exc)
+        logger.error("google_oauth_token_exchange_failed", error=error_detail, user_id=user_id)
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"{frontend}/?gmail_error=token_exchange_failed&detail={quote(error_detail[:200])}",
+            status_code=302,
+        )
 
     if not tokens.get("refresh_token"):
         # refresh_token is absent when the user has already granted once.
