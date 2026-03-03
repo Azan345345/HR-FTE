@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ExternalLink, Briefcase, MapPin, DollarSign, Zap, Mail, Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import { ExternalLink, Briefcase, MapPin, DollarSign, Zap, Mail, Loader2, XCircle, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAgentStore } from "@/stores/agent-store";
 
 interface Job {
   id: string;
@@ -44,15 +45,31 @@ function MatchBadge({ score }: { score: number }) {
   );
 }
 
-function HrBadge({ hrFound }: { hrFound?: boolean }) {
-  if (hrFound === true) {
+type LiveHrStatus = "searching" | "found" | "not_found" | "pending";
+
+function HrBadge({ status }: { status: LiveHrStatus }) {
+  if (status === "found") {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 flex-shrink-0">
         <Mail size={8} /> HR
       </span>
     );
   }
-  // undefined or false = still searching (background task)
+  if (status === "not_found") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-50 text-red-500 border border-red-200 flex-shrink-0">
+        <XCircle size={8} /> HR
+      </span>
+    );
+  }
+  if (status === "searching") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-500 border border-indigo-200 flex-shrink-0">
+        <Loader2 size={8} className="animate-spin" /> HR
+      </span>
+    );
+  }
+  // pending — hr_finder hasn't started yet for this job
   return (
     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-50 text-slate-400 border border-slate-200 flex-shrink-0">
       <Loader2 size={8} className="animate-spin" /> HR
@@ -63,6 +80,7 @@ function HrBadge({ hrFound }: { hrFound?: boolean }) {
 export function JobResultsCard({ metadata, onSendAction }: Props) {
   const { jobs } = metadata;
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
+  const { hrResults, hrSearchDone } = useAgentStore();
 
   const toggle = (id: string) =>
     setExpandedJobs((prev) => {
@@ -70,6 +88,15 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+
+  const getLiveHrStatus = (job: Job): LiveHrStatus => {
+    const key = `${job.company}|${job.title}`;
+    const result = hrResults[key];
+    if (result) return result.status;
+    // Not received a ws event yet
+    if (hrSearchDone) return "not_found"; // search finished, no contact found
+    return "pending"; // still waiting for search to reach this job
+  };
 
   return (
     <motion.div
@@ -80,6 +107,9 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
     >
       {jobs.map((job, idx) => {
         const isExpanded = expandedJobs.has(job.id);
+        const hrStatus = getLiveHrStatus(job);
+        const noHr = hrStatus === "not_found";
+        const isSearching = hrStatus === "searching" || hrStatus === "pending";
 
         return (
           <motion.div
@@ -87,20 +117,24 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, delay: 0.1 + idx * 0.07 }}
-            className="rounded-xl border border-slate-200 bg-slate-50 hover:border-rose-200 hover:bg-rose-50/30 transition-colors"
+            className={`rounded-xl border transition-colors ${
+              noHr
+                ? "border-red-200 bg-red-50/30"
+                : "border-slate-200 bg-slate-50 hover:border-rose-200 hover:bg-rose-50/30"
+            }`}
           >
-            {/* ── Collapsed header (always visible) ── */}
+            {/* ── Collapsed header ── */}
             <button
               onClick={() => toggle(job.id)}
               className="w-full flex items-center gap-3 px-4 py-3 text-left"
             >
               <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-semibold text-slate-900 font-sans leading-tight truncate">
+                <p className={`text-[13px] font-semibold font-sans leading-tight truncate ${noHr ? "text-slate-500" : "text-slate-900"}`}>
                   {job.title}
                 </p>
                 <p className="text-[11px] text-slate-500 font-sans truncate">{job.company}</p>
               </div>
-              <HrBadge hrFound={job.hr_found} />
+              <HrBadge status={hrStatus} />
               <MatchBadge score={job.match_score || 0} />
               {job.job_type && (
                 <Badge variant="secondary" className="text-[10px] flex-shrink-0 bg-white border-slate-200 hidden sm:inline-flex">
@@ -166,16 +200,32 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
                       </div>
                     )}
 
-                    {/* Actions — button always shown; HR status is informational only */}
+                    {/* Actions */}
                     <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
-                      <Button
-                        size="sm"
-                        className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
-                        onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
-                      >
-                        <Briefcase size={12} />
-                        Tailor CV & Apply
-                      </Button>
+                      {noHr ? (
+                        <div className="flex-1 flex items-center gap-1.5 text-[11px] text-red-500 font-sans font-medium">
+                          <XCircle size={13} className="flex-shrink-0" />
+                          No HR contact found — direct application unavailable
+                        </div>
+                      ) : isSearching ? (
+                        <Button
+                          size="sm"
+                          disabled
+                          className="flex-1 h-8 text-[12px] font-semibold gap-1.5 font-sans opacity-60"
+                        >
+                          <Loader2 size={12} className="animate-spin" />
+                          Finding HR contact…
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
+                          onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
+                        >
+                          <Briefcase size={12} />
+                          Tailor CV & Apply
+                        </Button>
+                      )}
                       {job.application_url && (
                         <Button
                           size="sm"

@@ -1181,9 +1181,11 @@ Return ONLY valid JSON, nothing else."""
 
     await event_bus.emit_workflow_update(user_id, "supervisor", [], ["job_hunter", "hr_finder"])
 
-    # Find jobs — HR lookup runs automatically in background via asyncio.create_task
+    # Pass the FULL original message so _handle_job_search_v2 can extract location
+    # from context. Passing only `query` (title-only) strips the location and causes
+    # jobs from the wrong country/region to be returned.
     text, search_meta = await _handle_job_search_v2(
-        user_id, session_id or "", query, db, limit=count
+        user_id, session_id or "", message, db, limit=count
     )
 
     if not search_meta:

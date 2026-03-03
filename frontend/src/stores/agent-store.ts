@@ -65,12 +65,17 @@ interface AgentInfo {
     };
 }
 
+export type HrStatus = "searching" | "found" | "not_found";
+
 interface AgentStoreState {
     agents: Record<AgentName, AgentInfo>;
     activeAgent: AgentName | null;
     completedNodes: string[];
     logs: LogEntry[];
     jobStream: JobStreamState | null;
+    // Persistent HR results — survives clearJobStream so JobResultsCard can update
+    hrResults: Record<string, { status: HrStatus; email?: string }>;
+    hrSearchDone: boolean;
     setAgentStatus: (name: AgentName, updates: Partial<AgentInfo>) => void;
     setActiveAgent: (name: AgentName | null) => void;
     addCompletedNode: (node: string) => void;
@@ -85,8 +90,12 @@ interface AgentStoreState {
     jobStreamDeduplicating: () => void;
     jobStreamDedupDone: (before: number, after: number, removed: number) => void;
     jobStreamUniqueJobs: (jobs: StreamJob[]) => void;
-    jobStreamHRStatus: (company: string, title: string, status: "searching" | "found" | "not_found", email?: string) => void;
+    jobStreamHRStatus: (company: string, title: string, status: HrStatus, email?: string) => void;
     clearJobStream: () => void;
+    // Persistent HR results (for JobResultsCard live updates)
+    setHrResult: (company: string, title: string, status: HrStatus, email?: string) => void;
+    setHrSearchDone: () => void;
+    clearHrResults: () => void;
 }
 
 const defaultAgents: Record<AgentName, AgentInfo> = {
@@ -106,6 +115,8 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     completedNodes: [],
     logs: [],
     jobStream: null,
+    hrResults: {},
+    hrSearchDone: false,
 
     setAgentStatus: (name, updates) =>
         set((state) => ({
@@ -154,7 +165,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
         })),
 
     resetAll: () =>
-        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [], jobStream: null }),
+        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [], jobStream: null, hrResults: {}, hrSearchDone: false }),
 
     startJobStream: () =>
         set({ jobStream: { sources: [], deduplicating: false, active: true, uniqueJobs: [], hrStatuses: {} } }),
@@ -220,4 +231,16 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
 
     clearJobStream: () =>
         set({ jobStream: null }),
+
+    setHrResult: (company, title, status, email) =>
+        set((state) => {
+            const key = `${company}|${title}`;
+            return {
+                hrResults: { ...state.hrResults, [key]: { status, email } },
+            };
+        }),
+
+    setHrSearchDone: () => set({ hrSearchDone: true }),
+
+    clearHrResults: () => set({ hrResults: {}, hrSearchDone: false }),
 }));

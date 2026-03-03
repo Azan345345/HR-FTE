@@ -34,6 +34,7 @@ export function useWebSocket(token: string | null) {
         setAgentStatus, setActiveAgent, addCompletedNode, addLog, updateLastLogStatus,
         startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone,
         jobStreamUniqueJobs, jobStreamHRStatus,
+        setHrResult, setHrSearchDone, clearHrResults,
     } = useAgentStore();
 
     const connect = useCallback(() => {
@@ -102,6 +103,10 @@ export function useWebSocket(token: string | null) {
                     if (agentName === "job_hunter") {
                         startJobStream();
                     }
+                    // Reset HR results when a new HR search begins
+                    if (agentName === "hr_finder") {
+                        clearHrResults();
+                    }
                     break;
                 }
 
@@ -154,6 +159,10 @@ export function useWebSocket(token: string | null) {
                         duration: data.time_taken ? `${Number(data.time_taken).toFixed(1)}s` : undefined,
                         tokens: data.tokens_used ? `${data.tokens_used} tokens` : undefined,
                     });
+                    // Mark HR search as done so JobResultsCard knows to stop spinners
+                    if (agentName === "hr_finder") {
+                        setHrSearchDone();
+                    }
                     break;
                 }
 
@@ -243,10 +252,13 @@ export function useWebSocket(token: string | null) {
                     const title = data.job_title as string;
                     if (phase === "searching") {
                         jobStreamHRStatus(company, title, "searching");
+                        setHrResult(company, title, "searching");
                     } else if (phase === "found") {
                         jobStreamHRStatus(company, title, "found", data.email as string);
+                        setHrResult(company, title, "found", data.email as string);
                     } else if (phase === "not_found") {
                         jobStreamHRStatus(company, title, "not_found");
+                        setHrResult(company, title, "not_found");
                     }
                     break;
                 }
@@ -258,7 +270,7 @@ export function useWebSocket(token: string | null) {
                     break;
             }
         },
-        [setAgentStatus, setActiveAgent, addCompletedNode, startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone, jobStreamUniqueJobs, jobStreamHRStatus]
+        [setAgentStatus, setActiveAgent, addCompletedNode, startJobStream, jobStreamSourceStart, jobStreamBatch, jobStreamDeduplicating, jobStreamDedupDone, jobStreamUniqueJobs, jobStreamHRStatus, setHrResult, setHrSearchDone, clearHrResults]
     );
 
     useEffect(() => {
