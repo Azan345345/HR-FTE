@@ -391,6 +391,49 @@ function ThinkingBubble() {
   );
 }
 
+function HrProcessingBubble() {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -16, y: 8 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      exit={{ opacity: 0, x: -8, y: 4 }}
+      className="max-w-[78%]"
+    >
+      <div className="flex items-center gap-2 mb-2 opacity-70">
+        <AgentAvatar />
+        <span className="text-[11px] font-semibold text-primary tracking-wide">CareerAgent</span>
+        <span className="text-[10px] text-slate-400">· HR Finder</span>
+      </div>
+      <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center flex-shrink-0">
+            <Mail size={14} className="text-indigo-500" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] font-semibold text-slate-700">Finding HR contacts…</span>
+              <Loader2 size={12} className="text-indigo-400 animate-spin flex-shrink-0" />
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Searching company websites &amp; databases in the background
+            </p>
+          </div>
+        </div>
+        <div className="mt-2 pt-2 border-t border-slate-50 flex items-center gap-1.5">
+          {[0, 1, 2, 3, 4].map(i => (
+            <motion.div
+              key={i}
+              className="h-1 flex-1 rounded-full bg-indigo-100"
+              animate={{ backgroundColor: ["#e0e7ff", "#6366f1", "#e0e7ff"] }}
+              transition={{ duration: 1.5, repeat: Infinity, delay: i * 0.3 }}
+            />
+          ))}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 const SUGGESTIONS = [
   {
     icon: Search,
@@ -565,7 +608,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const { jobStream, clearJobStream } = useAgentStore();
+  const { jobStream, clearJobStream, agents } = useAgentStore();
+  const hrProcessing = agents.hr_finder?.status === "processing";
 
   const sessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => { sessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -898,8 +942,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         {/* Live job stream — persists until a new search starts (startJobStream resets it) */}
         {jobStream && <LiveJobStreamPanel stream={jobStream} />}
 
+        {/* HR finder background processing indicator — shown after job results arrive */}
+        <AnimatePresence>
+          {!jobStream && hrProcessing && <HrProcessingBubble />}
+        </AnimatePresence>
+
         {/* Generic thinking indicator — only when NOT actively streaming jobs */}
-        {(isSending || isUploading) && !jobStream?.active && <ThinkingBubble />}
+        {(isSending || isUploading) && !jobStream?.active && !hrProcessing && <ThinkingBubble />}
 
         <div ref={chatEndRef} />
       </div>

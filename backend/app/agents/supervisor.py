@@ -6,6 +6,7 @@ Action prefixes (__TAILOR_APPLY__:, etc.) are programmatic button-click handlers
 
 import os
 import re
+import asyncio
 import structlog
 import json
 import time
@@ -803,27 +804,17 @@ Return ONLY valid JSON."""
     raw_count = len(jobs)
     await event_bus.emit_agent_progress(user_id, "job_hunter", 2, 3, f"Scoring {raw_count} jobs against your CV", "Calculating match scores")
 
-    # ── HR email lookup: annotate ALL jobs with hr_found flag ─────────────────
-    from app.agents.hr_finder import batch_find_hr_contacts
-    await event_bus.emit_agent_started(
-        user_id, "hr_finder",
-        f"Checking HR contacts for {raw_count} jobs (concurrent lookup)"
-    )
-    jobs = await batch_find_hr_contacts(jobs)  # returns all, each with hr_found flag
-
-    verified_count = sum(1 for j in jobs if j.get("hr_found"))
-    await event_bus.emit_agent_completed(
-        user_id, "hr_finder",
-        f"HR lookup complete: {verified_count}/{raw_count} jobs have verified HR emails"
-    )
-    # ─────────────────────────────────────────────────────────────────────────
+    # HR lookup runs as a background task AFTER we return job results to the user.
+    # This prevents the Railway gateway timeout (502) that occurred when batch HR
+    # lookups blocked the HTTP response for 60-120 seconds.
+    # The background task emits hr_stream WebSocket events that update the UI.
 
     # Use a fresh DB session for writes — the original session's connection may have
-    # dropped during the long external API calls (job search + HR lookup can take 5+ min).
+    # dropped during the long external API calls (job search can take 30+ seconds).
     from app.db.database import AsyncSessionLocal
-    from app.db.models import HRContact as _HRContact
     saved_jobs = []
     search_id = None
+    job_entries_for_hr: list[dict] = []  # collected for background HR lookup
 
     async with AsyncSessionLocal() as fresh_db:
         # Save JobSearch record
@@ -838,7 +829,7 @@ Return ONLY valid JSON."""
         await fresh_db.flush()
         search_id = job_search.id
 
-        # Save Job records + pre-fetched HRContact records
+        # Save Job records
         for job_data in jobs:
             job_record = Job(
                 search_id=job_search.id,
@@ -858,22 +849,6 @@ Return ONLY valid JSON."""
             )
             fresh_db.add(job_record)
             await fresh_db.flush()
-
-            # Persist the pre-fetched HR contact so tailor step can load it directly
-            hr_pre = job_data.get("_hr_contact")
-            if hr_pre:
-                hr_rec = _HRContact(
-                    job_id=job_record.id,
-                    hr_name=hr_pre.get("hr_name"),
-                    hr_email=hr_pre.get("hr_email"),
-                    hr_title=hr_pre.get("hr_title"),
-                    hr_linkedin=hr_pre.get("hr_linkedin") or "",
-                    confidence_score=hr_pre.get("confidence_score"),
-                    source=hr_pre.get("source"),
-                    verified=hr_pre.get("verified", False),
-                )
-                fresh_db.add(hr_rec)
-                await fresh_db.flush()
 
             # Build why-match bullets from data
             matching = job_data.get("matching_skills", [])
@@ -898,23 +873,34 @@ Return ONLY valid JSON."""
                 "missing_skills": job_record.missing_skills or [],
                 "why_match": why_match,
                 "application_url": job_record.application_url,
-                "hr_found": job_data.get("hr_found", bool(hr_pre)),
+                "hr_found": False,  # will be updated by background HR lookup task
+            })
+            # Collect minimal data for background HR lookup
+            job_entries_for_hr.append({
+                "job_id": job_record.id,
+                "company": job_record.company,
+                "title": job_record.title,
+                "company_domain": job_data.get("company_domain", ""),
             })
 
         await fresh_db.commit()
         await _log_execution(fresh_db, user_id, session_id, "job_hunter", f"search:{search_query}", "success",
                              int((time.monotonic() - _t) * 1000))
         await fresh_db.commit()
-    verified_saved = sum(1 for j in saved_jobs if j.get("hr_found"))
-    await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} unique jobs, {verified_saved} with verified HR contacts")
-    await event_bus.emit_workflow_update(user_id, "job_hunter", ["job_hunter", "hr_finder"], ["cv_tailor", "email_sender"])
+
+    # Launch HR lookup as a background asyncio task — does NOT block the HTTP response.
+    # Results stream to the frontend via hr_stream WebSocket events.
+    asyncio.create_task(_bg_hr_lookup(user_id, job_entries_for_hr))
+
+    await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} positions — searching HR contacts in background")
+    await event_bus.emit_workflow_update(user_id, "job_hunter", ["job_hunter"], ["hr_finder", "cv_tailor", "email_sender"])
 
     location_str = f" in {location}" if location else ""
-    hr_note = f" — **{verified_saved}** with verified HR email (apply-ready)" if verified_saved < len(saved_jobs) else ""
     text = (
-        f"Found **{len(saved_jobs)} positions** matching \"{search_query}\"{location_str}.{hr_note} "
-        "Jobs with a verified HR email show a **'Tailor CV & Apply'** button. "
-        "Jobs without a verified HR contact show a red ✗ — you can still view them but cannot send a direct application."
+        f"Found **{len(saved_jobs)} positions** matching \"{search_query}\"{location_str}. "
+        "I'm now searching for HR contacts in the background — "
+        "jobs will show a **✓ HR found** badge as contacts are discovered. "
+        "Click **'Tailor CV & Apply'** on any job to begin the application pipeline."
     )
 
     return (text, {
@@ -923,6 +909,98 @@ Return ONLY valid JSON."""
         "jobs": saved_jobs,
         "selected_cv_id": selected_cv_id or cv_id,   # remembered for tailor step
     })
+
+
+# ── Background HR Lookup ──────────────────────────────────────────────────────
+
+async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
+    """Background task: find HR contacts sequentially and update DB + emit WS events.
+
+    Runs AFTER the job-search HTTP response is already sent to the client so it
+    never blocks the request.  Results stream to the frontend via hr_stream events.
+    """
+    from app.agents.hr_finder import find_hr_contact
+    from app.db.database import AsyncSessionLocal
+    from app.db.models import HRContact as _HRContact
+
+    if not job_entries:
+        return
+
+    await event_bus.emit_agent_started(
+        user_id, "hr_finder",
+        f"Searching HR contacts for {len(job_entries)} companies…"
+    )
+
+    found_count = 0
+    for entry in job_entries:
+        job_id = entry["job_id"]
+        company = entry["company"]
+        title = entry["title"]
+        domain = entry.get("company_domain") or ""
+
+        await event_bus.emit(user_id, "hr_stream", {
+            "phase": "searching",
+            "company": company,
+            "job_title": title,
+        })
+
+        try:
+            result = await asyncio.wait_for(
+                find_hr_contact(
+                    company=company,
+                    job_title=title,
+                    company_domain=domain or None,
+                    user_id=user_id,
+                ),
+                timeout=20,  # 20s per company — prevents runaway lookups
+            )
+
+            if result.get("hr_email"):
+                found_count += 1
+                async with AsyncSessionLocal() as db:
+                    db.add(_HRContact(
+                        job_id=job_id,
+                        hr_name=result.get("hr_name"),
+                        hr_email=result.get("hr_email"),
+                        hr_title=result.get("hr_title"),
+                        hr_linkedin=result.get("hr_linkedin") or "",
+                        confidence_score=result.get("confidence_score"),
+                        source=result.get("source"),
+                        verified=result.get("verified", False),
+                    ))
+                    await db.commit()
+                await event_bus.emit(user_id, "hr_stream", {
+                    "phase": "found",
+                    "company": company,
+                    "job_title": title,
+                    "email": result.get("hr_email"),
+                    "total_found": len(result.get("all_recipients", [])),
+                })
+            else:
+                await event_bus.emit(user_id, "hr_stream", {
+                    "phase": "not_found",
+                    "company": company,
+                    "job_title": title,
+                })
+        except asyncio.TimeoutError:
+            logger.warning("bg_hr_lookup_timeout", company=company)
+            await event_bus.emit(user_id, "hr_stream", {
+                "phase": "not_found",
+                "company": company,
+                "job_title": title,
+            })
+        except Exception as e:
+            logger.warning("bg_hr_lookup_error", company=company, error=str(e))
+            await event_bus.emit(user_id, "hr_stream", {
+                "phase": "not_found",
+                "company": company,
+                "job_title": title,
+            })
+
+    await event_bus.emit_agent_completed(
+        user_id, "hr_finder",
+        f"HR search complete: {found_count}/{len(job_entries)} contacts found"
+    )
 
 
 # ── Continuation Handler ──────────────────────────────────────────────────────
