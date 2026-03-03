@@ -1503,7 +1503,7 @@ async def _handle_tailor_apply(
         # Fallback live lookup (e.g. manual tailor triggered outside of search flow)
         _hr_already_saved = False
         company_domain = getattr(job, "company_domain", None)
-        hr_contact = await find_hr_contact(job.company, job.title, company_domain=company_domain)
+        hr_contact = await find_hr_contact(job.company, job.title, company_domain=company_domain, user_id=user_id)
 
         if hr_contact.get("source") == "not_found":
             await _log_execution(db, user_id, "tailor", "hr_finder", f"find_hr:{job.company}",
@@ -1568,10 +1568,11 @@ async def _handle_tailor_apply(
             hr_name=hr_contact.get("hr_name"),
             hr_email=hr_contact.get("hr_email"),
             hr_title=hr_contact.get("hr_title"),
+            hr_linkedin=hr_contact.get("hr_linkedin"),
             confidence_score=hr_contact.get("confidence_score"),
             source=hr_contact.get("source"),
-            **{k: hr_contact.get(k) for k in ("hr_linkedin", "verified")
-               if hasattr(HRContact, k) and hr_contact.get(k) is not None},
+            verified=bool(hr_contact.get("verified", False)),
+            additional_emails=hr_contact.get("all_recipients", []),
         )
         db.add(hr_contact_record)
         await db.flush()
@@ -1717,11 +1718,11 @@ async def _handle_approve_cv(
         )
         cv = cv_result.scalar_one_or_none()
         personal = (cv.parsed_data or {}).get("personal_info", {}) if cv else {}
-        candidate_name = personal.get("name", "Candidate").replace(" ", "_")
+        candidate_name = (personal.get("name") or "Candidate").replace(" ", "_")
 
         job_result = await db.execute(select(Job).where(Job.id == application.job_id))
         job = job_result.scalar_one_or_none()
-        company_name = (job.company if job else "Company").replace(" ", "_")
+        company_name = ((job.company or "Company") if job else "Company").replace(" ", "_")
 
         await event_bus.emit_agent_started(user_id, "doc_generator", "Generating PDF")
         pdf_path = await generate_cv_pdf({"tailored_cv": tailored_cv.tailored_data})
@@ -1823,7 +1824,7 @@ async def _handle_send_email(
 
     if needs_refresh and job:
         await event_bus.emit_agent_started(user_id, "hr_finder", f"Re-finding HR contact for {job.company}")
-        fresh = await _find_hr(job.company, job.title)
+        fresh = await _find_hr(job.company, job.title, user_id=user_id)
         await event_bus.emit_agent_completed(user_id, "hr_finder", "HR contact lookup complete")
 
         if fresh.get("hr_email"):
@@ -1846,21 +1847,26 @@ async def _handle_send_email(
                     confidence_score=fresh.get("confidence_score"),
                     source=fresh.get("source"),
                     verified=fresh.get("verified", False),
+                    additional_emails=fresh.get("all_recipients", []),
                 )
                 db.add(new_hr)
                 await db.flush()
                 application.hr_contact_id = new_hr.id
             await db.flush()
+        elif hr_email:
+            # Re-lookup found nothing, but we already have an email from the
+            # background pre-filter (possibly low-confidence/guessed). Fall
+            # through and send — better to try than to silently block.
+            logger.info("hr_refresh_failed_using_existing", email=hr_email, source=source)
         else:
-            # Still not found — block and report API errors
-            api_errors = fresh.get("api_errors", [])
-            error_detail = ("\n\n**API errors:**\n" + "\n".join(f"- `{e}`" for e in api_errors)) if api_errors else ""
+            # Truly no email anywhere — block and report
             job_company_str = job.company if job else "the company"
             return (
-                f"Still couldn't find a verified HR email for **{job_company_str}**. I won't send to a guessed address.{error_detail}\n\n"
-                f"Add one of these free API keys to your `.env` and restart:\n"
-                f"- `APOLLO_API_KEY` → https://app.apollo.io (50 free/month)\n"
-                f"- `PROSPEO_API_KEY` → https://prospeo.io (150 free/month)",
+                f"No HR contact email is available for **{job_company_str}** — the search could not find one.\n\n"
+                "To resolve this, add a free API key to your Railway environment variables and redeploy:\n"
+                "- `APOLLO_API_KEY` — https://app.apollo.io (50 free/month)\n"
+                "- `PROSPEO_API_KEY` — https://prospeo.io (150 free/month)\n\n"
+                "Or enter the HR email manually by editing the email draft above and retrying.",
                 None,
             )
 
@@ -2908,7 +2914,7 @@ async def _handle_email_compose_send(
         primary_cv = cv_row.scalar_one_or_none()
 
     cv_data: dict = primary_cv.parsed_data or {} if primary_cv else {}
-    candidate_name = cv_data.get("personal_info", {}).get("name", "the candidate")
+    candidate_name = cv_data.get("personal_info", {}).get("name") or "the candidate"
 
     # ── 5. Extract title + company from JD ───────────────────────────────────
     llm = get_llm(task="email_composition")
