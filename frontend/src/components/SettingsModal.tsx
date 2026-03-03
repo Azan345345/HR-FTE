@@ -115,7 +115,6 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const handleCVDelete = async () => {
     if (!cvDeleteTarget) return;
     await deleteCV(cvDeleteTarget.id);
-    await fetchCVs(); // refresh list while success state is showing
   };
 
   const handleDeleteAccount = async () => {
@@ -621,7 +620,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         open={!!cvDeleteTarget}
         onOpenChange={(v) => { if (!v) setCvDeleteTarget(null); }}
         onConfirm={handleCVDelete}
-        onSuccess={() => setCvDeleteTarget(null)}
+        onSuccess={() => { setCvDeleteTarget(null); fetchCVs(); }}
         title="Delete CV"
         description={`"${cvDeleteTarget?.name ?? ""}" and all its tailored versions and generated PDFs will be permanently deleted. This cannot be undone.`}
         confirmLabel="Delete CV"

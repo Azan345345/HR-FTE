@@ -2759,21 +2759,21 @@ async def _handle_email_compose_send(
     history: list,
     db: AsyncSession,
 ) -> Tuple[str, Optional[dict]]:
-    """Write a professional application email (with CV attached) and send it via Gmail.
+    """Compose a professional application email and present it in the EmailReviewCard.
 
     Flow:
       1. Parse HR email from message (regex).
       2. Parse job description from message + conversation history.
-      3. If JD still missing → ask user for it.
-      4. Load user's primary CV.
-      5. Compose email with LLM (AIDA framework).
-      6. If Gmail is connected → send; otherwise return the draft for copy-paste.
+      3. If JD or HR email missing → ask user.
+      4. Load user's primary CV, compose email with LLM (AIDA framework).
+      5. Persist JobSearch → Job → HRContact → Application in DB.
+      6. Return email_review metadata so EmailReviewCard renders for approval.
+         User then clicks "Send via Gmail" → _handle_send_email() handles the actual send.
     """
     import re as _re
     from sqlalchemy import select
-    from app.db.models import UserCV, UserIntegration
-    from app.agents.email_sender import compose_application_email, send_via_gmail
-    from app.config import settings as app_settings
+    from app.db.models import UserCV, JobSearch, Job, HRContact, Application, User as _User
+    from app.agents.email_sender import compose_application_email
 
     # ── 1. Strip attached file block + extract plain text ────────────────────
     attached_content: Optional[str] = None
@@ -2804,10 +2804,8 @@ async def _handle_email_compose_send(
                 break
 
     # ── 3. Extract job description ────────────────────────────────────────────
-    # Remove the email address from the message so we don't treat it as JD
     jd_candidate = _re.sub(email_pattern, "", clean_msg).strip()
 
-    # Also scan attached content and history for JD material
     jd_parts: list[str] = []
     if len(jd_candidate) > 50:
         jd_parts.append(jd_candidate)
@@ -2829,11 +2827,10 @@ async def _handle_email_compose_send(
             None,
         )
 
-    # Also ask for HR email if still missing
     if not hr_email:
         return (
             "I have the job description — great!\n\n"
-            "Now I need the **HR contact's email address**. Please share it and I'll write and send the email.",
+            "Now I need the **HR contact's email address**. Please share it and I'll draft the email for your review.",
             None,
         )
 
@@ -2868,105 +2865,88 @@ Job Description: \"\"\"{job_description[:800]}\"\"\""""
     job_title = (meta.get("title") or "the position").strip()
     company = (meta.get("company") or "the company").strip()
 
-    # ── 6. Compose email ──────────────────────────────────────────────────────
+    # ── 6. Compose email via LLM ──────────────────────────────────────────────
     await event_bus.emit_agent_started(user_id, "email_composer", f"Writing email for {job_title} at {company}")
 
-    job_data = {"title": job_title, "company": company, "description": job_description}
-    hr_contact = {"hr_name": "Hiring Manager", "email": hr_email}
-
-    # Get LinkedIn URL from user profile
-    from app.db.models import User as _User
     user_row = await db.execute(select(_User).where(_User.id == user_id))
     user_obj = user_row.scalar_one_or_none()
     linkedin_url = (user_obj.preferences or {}).get("linkedin_url") if user_obj else None
 
     email_result = await compose_application_email(
-        job_data=job_data,
+        job_data={"title": job_title, "company": company, "description": job_description},
         cv_data=cv_data,
-        hr_contact=hr_contact,
+        hr_contact={"hr_name": "Hiring Manager", "email": hr_email},
         linkedin_url=linkedin_url,
     )
     subject = email_result.get("email_subject", f"Application for {job_title} – {candidate_name}")
     body = email_result.get("email_body", "")
 
-    # ── 7. Load Gmail tokens ──────────────────────────────────────────────────
-    int_result = await db.execute(
-        select(UserIntegration).where(
-            UserIntegration.user_id == user_id,
-            UserIntegration.service_name.in_(["google", "gmail"]),
-            UserIntegration.is_active == True,
-        )
+    # ── 7. Check if a CV PDF will be available ───────────────────────────────
+    pdf_filename = f"{candidate_name.replace(' ', '_')}_CV.pdf" if primary_cv else None
+
+    # ── 8. Persist DB records: JobSearch → Job → HRContact → Application ────
+    job_search = JobSearch(
+        user_id=user_id,
+        search_query=f"Manual email: {job_title} at {company}",
+        target_role=job_title,
+        status="completed",
     )
-    integration = int_result.scalar_one_or_none()
-    gmail_tokens: dict = {}
-    if integration:
-        gmail_tokens = {
-            "access_token": integration.access_token,
-            "refresh_token": integration.refresh_token,
-            "client_id": app_settings.GOOGLE_OAUTH_CLIENT_ID,
-            "client_secret": app_settings.GOOGLE_OAUTH_CLIENT_SECRET,
-        }
-    elif app_settings.GOOGLE_REFRESH_TOKEN:
-        gmail_tokens = {
-            "access_token": None,
-            "refresh_token": app_settings.GOOGLE_REFRESH_TOKEN,
-            "client_id": app_settings.GOOGLE_OAUTH_CLIENT_ID,
-            "client_secret": app_settings.GOOGLE_OAUTH_CLIENT_SECRET,
-        }
+    db.add(job_search)
+    await db.flush()
 
-    # ── 8. Attach CV PDF if available ────────────────────────────────────────
-    pdf_bytes: Optional[bytes] = None
-    pdf_filename = f"{candidate_name.replace(' ', '_')}_CV.pdf"
-    if primary_cv and primary_cv.parsed_data:
-        try:
-            from app.agents.doc_generator import generate_cv_pdf
-            pdf_bytes = await generate_cv_pdf(primary_cv.parsed_data)
-        except Exception as _pdf_err:
-            logger.warning("email_handler_pdf_failed", error=str(_pdf_err))
+    job_rec = Job(
+        search_id=job_search.id,
+        title=job_title,
+        company=company,
+        description=job_description[:5000],
+        source="manual",
+    )
+    db.add(job_rec)
+    await db.flush()
 
-    # ── 9. Send or return draft ───────────────────────────────────────────────
-    if gmail_tokens:
-        await event_bus.emit_agent_started(user_id, "email_sender", f"Sending email to {hr_email}")
-        send_result = await send_via_gmail(
-            user_tokens=gmail_tokens,
-            to_email=hr_email,
-            subject=subject,
-            body=body,
-            attachment_bytes=pdf_bytes,
-            attachment_filename=pdf_filename,
-        )
-        if send_result.get("status") == "sent":
-            return (
-                f"✅ **Email sent successfully** to `{hr_email}`!\n\n"
-                f"**Subject:** {subject}\n\n"
-                f"---\n\n{body}\n\n"
-                + (f"📎 *Your CV ({pdf_filename}) was attached.*" if pdf_bytes else ""),
-                None,
-            )
-        else:
-            err = send_result.get("error", "Unknown error")
-            error_code = send_result.get("error_code", "")
-            if error_code == "token_revoked":
-                return (
-                    f"⚠️ **Gmail token expired.** Please reconnect Gmail in **Settings → Integrations**.\n\n"
-                    f"Here is your email draft instead:\n\n"
-                    f"**To:** {hr_email}\n**Subject:** {subject}\n\n---\n\n{body}",
-                    None,
-                )
-            return (
-                f"⚠️ **Email could not be sent** ({err}).\n\n"
-                f"Here is your draft — copy and send it manually:\n\n"
-                f"**To:** {hr_email}\n**Subject:** {subject}\n\n---\n\n{body}",
-                None,
-            )
-    else:
-        # Gmail not connected — return draft for manual sending
-        return (
-            f"✉️ **Email draft ready** (Gmail not connected — connect in Settings to auto-send):\n\n"
-            f"**To:** {hr_email}\n**Subject:** {subject}\n\n---\n\n{body}\n\n"
-            f"*Connect Gmail in **Settings → Integrations** to send automatically next time.*",
-            None,
-        )
+    hr_record = HRContact(
+        job_id=job_rec.id,
+        hr_name="Hiring Manager",
+        hr_email=hr_email,
+        confidence_score=1.0,
+        source="user_provided",
+        verified=True,
+    )
+    db.add(hr_record)
+    await db.flush()
+
+    application = Application(
+        user_id=user_id,
+        job_id=job_rec.id,
+        hr_contact_id=hr_record.id,
+        email_subject=subject,
+        email_body=body,
+        status="pending_approval",
+    )
+    db.add(application)
+    await db.commit()
+
+    await event_bus.emit_agent_completed(user_id, "email_composer", "Email draft ready for review")
+
+    # ── 9. Return email_review metadata — EmailReviewCard handles the rest ───
+    return (
+        f"✉️ Your application email for **{job_title}** at **{company}** is ready for review.\n\n"
+        f"Edit the subject or body if needed, then click **Send via Gmail** to deliver it to `{hr_email}`.",
+        {
+            "type": "email_review",
+            "application_id": application.id,
+            "hr_contact": {
+                "name": "Hiring Manager",
+                "email": hr_email,
+                "title": "HR",
+            },
+            "email": {
+                "subject": subject,
+                "body": body,
+            },
+            "pdf_filename": pdf_filename,
+        },
+    )
 
 
 # ── /cover-letter handler ─────────────────────────────────────────────────────
