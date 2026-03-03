@@ -36,6 +36,9 @@ function GmailOAuthHandler() {
         description: "CareerAgent can now send application emails on your behalf.",
         duration: 5000,
       });
+      // Persist result so OnboardingFlow can read it after it mounts
+      // (GmailOAuthHandler clears the URL params before OnboardingFlow is ready)
+      sessionStorage.setItem("onboarding_gmail_result", "connected");
       params.delete("gmail_connected");
       navigate({ search: params.toString() }, { replace: true });
     } else if (error) {
@@ -45,6 +48,7 @@ function GmailOAuthHandler() {
         description: detail ? `${baseMsg}\n\nDetail: ${detail}` : baseMsg,
         duration: 12000,
       });
+      sessionStorage.setItem("onboarding_gmail_result", `error:${error}`);
       params.delete("gmail_error");
       params.delete("detail");
       navigate({ search: params.toString() }, { replace: true });

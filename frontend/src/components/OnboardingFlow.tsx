@@ -54,18 +54,20 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [tourProgress, setTourProgress] = useState(0);
   const tourTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Check URL params for Gmail OAuth return
+  // Restore Gmail step after OAuth redirect.
+  // GmailOAuthHandler in App.tsx removes URL params before OnboardingFlow mounts
+  // (because getProfile() is async), so we read the result from sessionStorage.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("gmail_connected") === "1") {
+    const result = sessionStorage.getItem("onboarding_gmail_result");
+    if (!result) return;
+    sessionStorage.removeItem("onboarding_gmail_result");
+    if (result === "connected") {
       setGmailState("connected");
       setStep(2);
-      window.history.replaceState({}, "", window.location.pathname);
-    } else if (params.get("gmail_error")) {
-      setGmailError(params.get("gmail_error") ?? "Connection failed");
+    } else if (result.startsWith("error:")) {
+      setGmailError(result.slice(6) || "Connection failed");
       setGmailState("error");
       setStep(2);
-      window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
 
