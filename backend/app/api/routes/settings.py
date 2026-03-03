@@ -68,18 +68,22 @@ async def set_model(body: SetModelRequest, current_user: User = Depends(get_curr
 class UpdateProfileRequest(BaseModel):
     name: Optional[str] = None
     linkedin_url: Optional[str] = None
+    birthdate: Optional[str] = None
+    onboarding_completed: Optional[bool] = None
 
 
 @router.get("/profile")
 async def get_profile(
     current_user: User = Depends(get_current_user),
 ):
-    """Get the user's profile including LinkedIn URL."""
+    """Get the user's profile including LinkedIn URL, birthdate, and onboarding status."""
     prefs = current_user.preferences or {}
     return {
         "name": current_user.name,
         "email": current_user.email,
         "linkedin_url": prefs.get("linkedin_url", ""),
+        "birthdate": prefs.get("birthdate", ""),
+        "onboarding_completed": prefs.get("onboarding_completed", False),
     }
 
 
@@ -89,18 +93,24 @@ async def update_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update user profile fields (name, LinkedIn URL)."""
+    """Update user profile fields (name, LinkedIn URL, birthdate, onboarding status)."""
     if body.name is not None:
         current_user.name = body.name.strip() or current_user.name
     prefs = dict(current_user.preferences or {})
     if body.linkedin_url is not None:
         prefs["linkedin_url"] = body.linkedin_url.strip()
+    if body.birthdate is not None:
+        prefs["birthdate"] = body.birthdate.strip()
+    if body.onboarding_completed is not None:
+        prefs["onboarding_completed"] = body.onboarding_completed
     current_user.preferences = prefs
     await db.commit()
     return {
         "name": current_user.name,
         "email": current_user.email,
         "linkedin_url": prefs.get("linkedin_url", ""),
+        "birthdate": prefs.get("birthdate", ""),
+        "onboarding_completed": prefs.get("onboarding_completed", False),
     }
 
 

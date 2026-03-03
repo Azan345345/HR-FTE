@@ -14,11 +14,12 @@ import {
   SeeingInView
 } from "@/components";
 import { CommandPalette } from "@/components/CommandPalette";
+import { OnboardingFlow } from "@/components/OnboardingFlow";
 import { useAuthStore } from "@/hooks/useAuth";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { listChatSessions } from "@/services/api";
+import { listChatSessions, getProfile, saveProfile } from "@/services/api";
 
-type AppState = "welcome" | "transitioning" | "workspace";
+type AppState = "welcome" | "transitioning" | "onboarding" | "workspace";
 
 const Index = () => {
   const [appState, setAppState] = useState<AppState>("welcome");
@@ -32,14 +33,30 @@ const Index = () => {
 
   const { isAuthenticated, signup, login, token } = useAuthStore();
 
-  // Auto-transition to workspace if already authenticated on mount
+  // Auto-transition after auth — check onboarding status first
   useEffect(() => {
     if (isAuthenticated && appState === "welcome") {
-      setAppState("workspace");
-    } else if (!isAuthenticated && appState === "workspace") {
+      getProfile()
+        .then((profile) => {
+          if (profile.onboarding_completed) {
+            setAppState("workspace");
+          } else {
+            setAppState("onboarding");
+          }
+        })
+        .catch(() => {
+          // If profile fetch fails, go straight to workspace to avoid blocking login
+          setAppState("workspace");
+        });
+    } else if (!isAuthenticated && (appState === "workspace" || appState === "onboarding")) {
       setAppState("welcome");
     }
   }, [isAuthenticated, appState]);
+
+  const handleOnboardingComplete = useCallback(async () => {
+    await saveProfile({ onboarding_completed: true }).catch(() => {});
+    setAppState("workspace");
+  }, []);
 
   // Connect to WebSocket for real-time observability
   const { isConnected: wsConnected } = useWebSocket(isAuthenticated && appState === "workspace" ? token : null);
@@ -76,7 +93,14 @@ const Index = () => {
 
   const handleWelcomeSubmit = useCallback(() => {
     setAppState("transitioning");
-    setTimeout(() => setAppState("workspace"), 1200);
+    // After transition animation, the isAuthenticated effect will route to onboarding or workspace
+    setTimeout(() => {
+      getProfile()
+        .then((profile) => {
+          setAppState(profile.onboarding_completed ? "workspace" : "onboarding");
+        })
+        .catch(() => setAppState("workspace"));
+    }, 1200);
   }, []);
 
   return (
@@ -90,6 +114,10 @@ const Index = () => {
           />
         )}
       </AnimatePresence>
+
+      {appState === "onboarding" && (
+        <OnboardingFlow onComplete={handleOnboardingComplete} />
+      )}
 
       {appState === "workspace" && (
         <div className="flex flex-col h-full w-full">

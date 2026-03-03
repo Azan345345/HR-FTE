@@ -10,6 +10,7 @@ interface User {
     name: string;
     email: string;
     preferences: Record<string, unknown>;
+    onboarding_completed?: boolean;
 }
 
 interface AuthState {

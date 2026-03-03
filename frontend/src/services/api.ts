@@ -307,11 +307,11 @@ export function setPreferredModel(model: string) {
 }
 
 export function getProfile() {
-    return api<{ name: string; email: string; linkedin_url: string }>("/settings/profile", { token: getToken() });
+    return api<{ name: string; email: string; linkedin_url: string; birthdate: string; onboarding_completed: boolean }>("/settings/profile", { token: getToken() });
 }
 
-export function saveProfile(data: { name?: string; linkedin_url?: string }) {
-    return api<{ name: string; email: string; linkedin_url: string }>("/settings/profile", {
+export function saveProfile(data: { name?: string; linkedin_url?: string; birthdate?: string; onboarding_completed?: boolean }) {
+    return api<{ name: string; email: string; linkedin_url: string; birthdate: string; onboarding_completed: boolean }>("/settings/profile", {
         method: "PATCH",
         token: getToken(),
         body: JSON.stringify(data),
