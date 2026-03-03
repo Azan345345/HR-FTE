@@ -107,6 +107,8 @@ async def process_chat_message(
                 result = await _handle_cv_general_request(user_id, _strip_file_block(message), history, db)
             elif pipeline == "email":
                 result = await _handle_email_compose_send(user_id, message, history, db)
+            elif pipeline == "apply_jd":
+                result = await _handle_apply_from_jd(user_id, _strip_file_block(message), db)
             elif pipeline == "cover_letter":
                 result = await _handle_cover_letter(user_id, message, history, db)
             else:
@@ -173,21 +175,13 @@ async def process_chat_message(
             history = await _load_conversation_history(user_id, session_id, db, limit=25)
             clean_msg = _strip_file_block(message)
 
-            # ── Natural Language Intent Routing ──────────────────────────────
-            llm = get_llm(task="supervisor_routing")
-            intent = await _classify_intent(llm, clean_msg, history)
-            logger.info("supervisor_intent", intent=intent, message=clean_msg[:100])
+            # ── Fast keyword pre-classifier for unambiguous signals ───────────
+            keyword_intent = _keyword_classify(clean_msg)
 
-            if intent == "continuation":
+            if keyword_intent == "continuation":
                 result = await _handle_continuation(user_id, session_id, history, db, message=clean_msg)
 
-            elif intent == "job_search":
-                result = await _handle_job_search_v2(user_id, session_id, clean_msg, db)
-
-            elif intent == "cv_tailor":
-                result = await _handle_cv_tailor_intent(user_id, clean_msg, db)
-
-            elif intent == "cv_upload":
+            elif keyword_intent == "cv_upload":
                 result = (
                     "I'd love to help with your CV! Use the **CV upload button** "
                     "in the sidebar to upload your PDF or DOCX file. Once uploaded, "
@@ -195,22 +189,14 @@ async def process_chat_message(
                     None,
                 )
 
-            elif intent in ("cv_analysis", "cv_general"):
-                result = await _handle_cv_general_request(user_id, clean_msg, history, db)
-
-            elif intent == "interview_prep":
-                result = await _handle_interview_prep_intent(user_id, message, db)  # keeps full block
-
-            elif intent == "status":
-                text = await _handle_status_request(user_id, db)
-                result = (text, None)
-
-            elif intent == "automated_apply":
-                result = await _handle_auto_pipeline(user_id, clean_msg, db, session_id=session_id)
-
             else:
-                text = await _general_response(llm, clean_msg, history, user_id=user_id, db=db)
-                result = (text, None)
+                # ── Intelligent multi-agent pipeline planner ──────────────────
+                llm = get_llm(task="supervisor_routing")
+                agents = await _plan_agents(llm, clean_msg, history)
+                logger.info("supervisor_pipeline_plan", agents=agents, message=clean_msg[:100])
+                result = await _orchestrate_agents(
+                    user_id, session_id, clean_msg, history, agents, db
+                )
 
     except Exception as e:
         logger.error("supervisor_handler_error", error=str(e), exc_info=True)
@@ -2947,6 +2933,360 @@ Job Description: \"\"\"{job_description[:800]}\"\"\""""
             "pdf_filename": pdf_filename,
         },
     )
+
+
+# ── Pipeline Planner ──────────────────────────────────────────────────────────
+
+async def _plan_agents(llm, message: str, history: list) -> list:
+    """LLM-based pipeline planner.
+
+    Analyzes the user's message and returns an ordered list of agent names
+    that should run to fulfil the request. One or many agents may be returned.
+
+    Agent names:
+      job_search   — search the web for job listings
+      cv_tailor    — tailor CV against a specific job description
+      hr_finder    — find HR contact email for a company / domain
+      email_review — compose application email + show approval card
+      interview_prep — generate interview Q&A + study plan
+      cv_general   — general CV improvements / analysis / ATS tips
+      status       — show pipeline status (jobs, applications, emails)
+      clarify      — ask user to clarify their vague request
+      general      — general career advice / Q&A
+    """
+    history_block = "(no prior messages)"
+    if history:
+        recent = [m for m in history[-8:] if not m.get("content", "").startswith("__")][-5:]
+        if recent:
+            history_block = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:200]}"
+                for m in recent
+            )
+
+    prompt = f"""You are the pipeline orchestrator for CareerAgent — an AI job-application assistant.
+Decide which agents to run for the user's message, in execution order.
+
+AVAILABLE AGENTS:
+  job_search    — Search the internet for job listings by role/location/keywords
+  cv_tailor     — Tailor the user's CV for a specific job description
+  hr_finder     — Find HR contact email for a company or domain
+  email_review  — Compose application email and show it for user approval before sending
+  interview_prep — Generate interview Q&A, study plan, salary data
+  cv_general    — General CV improvements, rewrites, ATS analysis, skill gaps
+  status        — Show pipeline status (saved jobs, applications, sent emails)
+  clarify       — Ask user to clarify a vague request
+  general       — General career advice, salary info, industry trends, Q&A
+
+DECISION RULES (apply in order, stop at first match):
+1. Message says "find/search/look for jobs [role/location]" (any job-search phrasing with no other task)
+   → ["job_search","cv_tailor","hr_finder","email_review"]  ← full automated pipeline
+2. Message contains a job description AND an HR email AND says "apply"/"send application"
+   → ["email_review"]  ← HR already provided, skip finder
+3. Message contains a job description AND says "apply"/"send application"/"send my CV"
+   → ["cv_tailor","hr_finder","email_review"]
+4. Message says "find HR email/contact for X" or "find HR at X" with no email task
+   → ["hr_finder"]
+5. Message says "find HR for X AND send email/apply"
+   → ["hr_finder","email_review"]
+6. Message contains an HR email and says "write email"/"send application"
+   → ["email_review"]
+7. Message says "prepare for interview"/"practice questions"/"mock interview"
+   → ["interview_prep"]
+8. Message says "apply to this job" + "and prepare for interview" (two tasks)
+   → ["cv_tailor","hr_finder","email_review","interview_prep"]
+9. Message says "write email to HR AND prep for interview"
+   → ["email_review","interview_prep"]
+10. Message says "tailor my CV for [specific job/company]"
+    → ["cv_tailor"]
+11. Message says "improve/fix/rewrite my CV" (no specific job)
+    → ["cv_general"]
+12. Message asks about their saved jobs, applications, or pipeline state
+    → ["status"]
+13. Message is very vague, one word, or unclear with no actionable intent
+    → ["clarify"]
+14. Everything else (career advice, salary Q, industry question)
+    → ["general"]
+
+Return ONLY a JSON array of agent names — no explanation, no markdown.
+
+CONVERSATION HISTORY:
+{history_block}
+
+USER MESSAGE: "{message}"
+
+JSON array:"""
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        m = re.search(r'\[[\s\S]*?\]', content)
+        if m:
+            agents = json.loads(m.group())
+            valid = {
+                "job_search", "cv_tailor", "hr_finder", "email_review",
+                "interview_prep", "cv_general", "status", "clarify", "general",
+            }
+            agents = [a for a in agents if a in valid]
+            if agents:
+                logger.debug("pipeline_plan", agents=agents, message=message[:80])
+                return agents
+    except Exception as exc:
+        logger.warning("plan_agents_failed", error=str(exc))
+
+    return ["general"]
+
+
+# ── Pipeline Orchestrator ──────────────────────────────────────────────────────
+
+async def _orchestrate_agents(
+    user_id: str,
+    session_id: str,
+    message: str,
+    history: list,
+    agents: list,
+    db: AsyncSession,
+) -> tuple:
+    """Execute a planned agent sequence, routing to existing handlers.
+
+    Context flows between steps:
+    - hr_finder email is injected into the email_review message
+    - job_search + any other agent triggers the full auto-pipeline
+    - cv_tailor + any other agent runs the apply-from-JD flow
+    """
+    if not agents:
+        llm = get_llm(task="supervisor_routing")
+        text = await _general_response(llm, message, history, user_id=user_id, db=db)
+        return (text, None)
+
+    # ── job_search present: full automated pipeline or standalone search ───────
+    if "job_search" in agents:
+        if len(agents) == 1:
+            # Only job_search requested — show job listings card
+            return await _handle_job_search_v2(user_id, session_id, message, db)
+        else:
+            # job_search + other agents → full auto-pipeline
+            return await _handle_auto_pipeline(user_id, message, db, session_id=session_id)
+
+    # ── cv_tailor in sequence → apply-from-JD flow ────────────────────────────
+    if "cv_tailor" in agents:
+        if len(agents) == 1:
+            # Only tailor requested — just generate tailored CV (downloadable)
+            return await _handle_cv_tailor_from_description(user_id, message, db)
+        else:
+            # Tailor + hr_finder + email_review (+ optionally interview_prep)
+            # _handle_apply_from_jd runs tailor → HR → email (cv_review card)
+            text, meta = await _handle_apply_from_jd(user_id, message, db)
+            if "interview_prep" in agents:
+                text += (
+                    "\n\n---\n💡 Once you've approved and sent your application, "
+                    "ask me **'prepare me for the interview'** and I'll build a full study plan!"
+                )
+            return (text, meta)
+
+    # ── hr_finder → email_review: discover HR then compose email ──────────────
+    if agents[0] == "hr_finder" and "email_review" in agents:
+        hr_text, hr_meta = await _handle_hr_finder_standalone(user_id, message, db)
+        # Extract the primary email from the response text
+        _email_re = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+        m = _email_re.search(hr_text)
+        if not m:
+            # HR not found — surface the finder result as-is
+            return (hr_text, hr_meta)
+        found_email = m.group()
+        await event_bus.emit_log_entry(
+            user_id, "supervisor", "HR Found",
+            f"HR email discovered: {found_email} — composing application email"
+        )
+        enriched_msg = f"{message}\nHR Email: {found_email}"
+        email_text, email_meta = await _handle_email_compose_send(
+            user_id, enriched_msg, history, db
+        )
+        combined = f"✅ **HR contact found:** `{found_email}`\n\n{email_text}"
+        if "interview_prep" in agents:
+            combined += (
+                "\n\n---\n💡 After sending, ask me **'prepare me for the interview'** "
+                "for a full study plan!"
+            )
+        return (combined, email_meta)
+
+    # ── hr_finder only ────────────────────────────────────────────────────────
+    if agents[0] == "hr_finder":
+        return await _handle_hr_finder_standalone(user_id, message, db)
+
+    # ── email_review (HR email already in message or ctx) ────────────────────
+    if "email_review" in agents:
+        text, meta = await _handle_email_compose_send(user_id, message, history, db)
+        if "interview_prep" in agents:
+            text += (
+                "\n\n---\n💡 Once your email is sent, ask me **'prepare me for the interview'** "
+                "for a full study plan!"
+            )
+        return (text, meta)
+
+    # ── interview_prep ────────────────────────────────────────────────────────
+    if "interview_prep" in agents:
+        return await _handle_interview_prep_intent(user_id, message, db)
+
+    # ── cv_general ────────────────────────────────────────────────────────────
+    if "cv_general" in agents:
+        return await _handle_cv_general_request(user_id, message, history, db)
+
+    # ── status ────────────────────────────────────────────────────────────────
+    if "status" in agents:
+        text = await _handle_status_request(user_id, db)
+        return (text, None)
+
+    # ── clarify ───────────────────────────────────────────────────────────────
+    if "clarify" in agents:
+        return await _handle_clarify_request(user_id, message, history)
+
+    # ── general / fallback ────────────────────────────────────────────────────
+    llm = get_llm(task="supervisor_routing")
+    text = await _general_response(llm, message, history, user_id=user_id, db=db)
+    return (text, None)
+
+
+# ── Clarify Handler ────────────────────────────────────────────────────────────
+
+async def _handle_clarify_request(
+    user_id: str,
+    message: str,
+    history: list,
+) -> tuple:
+    """Ask the user to clarify what they want CareerAgent to do."""
+    llm = get_llm(task="supervisor_routing")
+
+    history_block = "(new conversation)"
+    if history:
+        recent = [m for m in history[-6:] if not m.get("content", "").startswith("__")]
+        if recent:
+            history_block = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:200]}"
+                for m in recent
+            )
+
+    prompt = f"""You are CareerAgent, an AI career assistant.
+The user's message is unclear or too vague to act on. Write a SHORT, friendly response (3-5 lines) that:
+1. Acknowledges what they said (one sentence)
+2. Asks them to be more specific about what they want
+3. Gives 3-4 concrete examples of what you can do
+
+You can: find jobs, apply to a specific job posting, find HR contacts, send application emails, tailor CVs, prepare for interviews, improve CVs.
+
+Conversation history:
+{history_block}
+
+User: "{message}"
+
+Write the clarification (no markdown headers, keep it short and conversational):"""
+
+    try:
+        resp = await llm.ainvoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+    except Exception:
+        text = (
+            "I'm not quite sure what you'd like me to do. Could you be more specific?\n\n"
+            "Here are some things I can help with:\n"
+            "- **`/search`** — Find jobs matching your role and location\n"
+            "- **`/apply`** — Apply to a job (paste the job description)\n"
+            "- **`/hr`** — Find HR contact emails for a company\n"
+            "- **`/email`** — Write and send a job application email\n"
+            "- **`/interview`** — Prepare for an upcoming interview"
+        )
+    return (text, None)
+
+
+# ── /apply-from-JD Handler ────────────────────────────────────────────────────
+
+async def _handle_apply_from_jd(
+    user_id: str,
+    message: str,
+    db: AsyncSession,
+) -> tuple:
+    """/apply pipeline: user provides a job description, no job-search step needed.
+
+    Creates JobSearch + Job records from the JD, then runs the full
+    tailor → HR-find → email-compose pipeline and returns a cv_review card.
+    The user then clicks Approve → email_review card → clicks Send via Gmail.
+    """
+    from sqlalchemy import select
+    from app.db.models import UserCV, Job, JobSearch as _JobSearch
+
+    if len(message.strip()) < 40:
+        return (
+            "Please paste the **job description** you want to apply to.\n\n"
+            "Example: `/apply` then paste the full job posting below.",
+            None,
+        )
+
+    # Verify CV uploaded
+    cv_row = await db.execute(
+        select(UserCV)
+        .where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    )
+    cv = cv_row.scalar_one_or_none()
+    if not cv:
+        cv_row = await db.execute(
+            select(UserCV)
+            .where(UserCV.user_id == user_id)
+            .order_by(UserCV.created_at.desc())
+            .limit(1)
+        )
+        cv = cv_row.scalar_one_or_none()
+    if not cv or not cv.parsed_data:
+        return (
+            "Please **upload your CV** first using the sidebar upload button, "
+            "then use `/apply [job description]`.",
+            None,
+        )
+
+    # Extract title + company from JD via LLM
+    llm = get_llm(task="supervisor_routing")
+    extract_prompt = f"""Extract job title and company name from this job description.
+Return ONLY JSON: {{"title": "...", "company": "..."}}
+If company is not mentioned, set it to "Unknown Company".
+Job Description: \"\"\"{message[:800]}\"\"\""""
+    try:
+        resp = await llm.ainvoke(extract_prompt)
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+        jmeta = json.loads(m.group()) if m else {}
+    except Exception:
+        jmeta = {}
+
+    title = (jmeta.get("title") or "Position").strip()
+    company = (jmeta.get("company") or "Unknown Company").strip()
+
+    # Create JobSearch + Job records so _handle_tailor_apply has a job_id
+    search = _JobSearch(
+        user_id=user_id,
+        search_query=f"apply: {title} at {company}",
+        target_role=title,
+        status="completed",
+    )
+    db.add(search)
+    await db.flush()
+
+    job = Job(
+        search_id=search.id,
+        title=title,
+        company=company,
+        description=message,
+        location="",
+        job_type="Full-time",
+        source="manual",
+        match_score=0,
+    )
+    db.add(job)
+    await db.flush()
+
+    await event_bus.emit_log_entry(
+        user_id, "supervisor", "/apply",
+        f"Running tailor → HR → email pipeline for {title} at {company}"
+    )
+
+    # Full pipeline: tailor CV + find HR + compose email → returns cv_review card
+    return await _handle_tailor_apply(user_id, job.id, db)
 
 
 # ── /cover-letter handler ─────────────────────────────────────────────────────
