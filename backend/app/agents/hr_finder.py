@@ -114,22 +114,23 @@ async def _find_hr_contact_impl(
     job_title: str,
     company_domain: Optional[str] = None,
 ) -> dict:
-    """Find verified HR contacts. Returns all discovered recipients."""
+    """Find verified HR / CEO / dept-head contacts.
+
+    Strategy order:
+      1. Hunter.io  (company-name search — 1 API call, finds HR + CEO + mgmt)
+      2. Website scraper (free, scrapes /contact /about /team pages)
+      3. SerpAPI LinkedIn search  (finds names → constructs emails)
+      4. Apify / Prospeo          (only when Hunter found zero people)
+      5. Pattern fallback + Hunter verifier
+    """
     from app.config import settings
 
     api_errors = []
-
-    # Accumulated contacts across all strategies.
-    # Each entry: {email, name, title, role, confidence, source}
     all_contacts: list[dict] = []
-
-    # resolved_domain tracks the best known domain across all strategies so
-    # later strategies (website scrape, pattern fallback) use the right one.
+    hunter_found_anyone = False       # True if Hunter returned ≥1 contact
     resolved_domain: Optional[str] = company_domain or None
 
-    # ── 0. Hunter.io Company-Name Search (MUST-USE — no domain needed) ────
-    # Hunter resolves the company → domain mapping itself; this is the most
-    # reliable strategy and runs first regardless of whether we have a domain.
+    # ── 1. Hunter.io — single company-name call (HR + CEO + mgmt in one) ──
     if settings.HUNTER_API_KEY:
         try:
             contacts, hunter_domain = await _hunter_company_search(
@@ -137,112 +138,77 @@ async def _find_hr_contact_impl(
             )
             if contacts:
                 all_contacts.extend(contacts)
-                logger.info("hunter_company_search", company=company,
-                            domain=hunter_domain, found=len(contacts))
-            # Always trust the domain Hunter returns — it's authoritative.
+                hunter_found_anyone = True
+                logger.info("hunter_found", company=company,
+                            domain=hunter_domain, count=len(contacts),
+                            roles=list({c["role"] for c in contacts}))
+            else:
+                logger.info("hunter_no_results", company=company,
+                            domain=hunter_domain,
+                            note="no emails indexed for this company yet")
             if hunter_domain:
                 resolved_domain = hunter_domain
         except Exception as e:
-            api_errors.append(f"Hunter company search: {e}")
-            logger.warning("hunter_company_search_failed", company=company, error=str(e))
+            api_errors.append(f"Hunter: {e}")
+            logger.warning("hunter_failed", company=company, error=str(e))
     else:
-        logger.warning("hunter_api_key_missing", msg="HUNTER_API_KEY not set — set it in env vars for best results")
+        logger.warning("hunter_key_missing",
+                       msg="Set HUNTER_API_KEY in env — it's the primary email source")
 
-    # Fall back to guessing only when Hunter didn't return a domain
+    # Resolve domain if Hunter didn't give us one
     if not resolved_domain:
         guessed = _guess_domain(company)
         resolved_domain = await _resolve_domain(guessed) if guessed else guessed
-
     domain = resolved_domain
 
-    # ── 1. Hunter.io Domain Search (HR department) ─────────────────────────
-    if settings.HUNTER_API_KEY and domain:
-        try:
-            contacts = await _hunter_domain_search(
-                domain, settings.HUNTER_API_KEY,
-                department="hr", company=company,
-            )
-            all_contacts.extend(contacts)
-            logger.info("hunter_hr_dept", company=company, found=len(contacts))
-        except Exception as e:
-            api_errors.append(f"Hunter HR dept: {e}")
-            logger.warning("hunter_hr_dept_failed", error=str(e))
-
-    # ── 2. Hunter.io Domain Search (Executive + Management depts) ─────────
-    if settings.HUNTER_API_KEY and domain:
-        try:
-            mgmt_contacts = await _hunter_domain_search(
-                domain, settings.HUNTER_API_KEY,
-                department="management", company=company,
-            )
-            exec_contacts = await _hunter_domain_search(
-                domain, settings.HUNTER_API_KEY,
-                department="executive", company=company,
-            )
-            all_contacts.extend(mgmt_contacts)
-            all_contacts.extend(exec_contacts)
-            logger.info(
-                "hunter_exec_mgmt", company=company,
-                found=len(mgmt_contacts) + len(exec_contacts),
-            )
-        except Exception as e:
-            api_errors.append(f"Hunter exec/mgmt: {e}")
-            logger.warning("hunter_exec_failed", error=str(e))
-
-    # ── 3. Hunter.io Domain Search (broad — catch generic company emails) ─
-    if settings.HUNTER_API_KEY and domain and not _has_hr_contact(all_contacts):
-        try:
-            contacts = await _hunter_domain_search(
-                domain, settings.HUNTER_API_KEY,
-                department=None, company=company,
-            )
-            all_contacts.extend(contacts)
-            logger.info("hunter_broad", company=company, found=len(contacts))
-        except Exception as e:
-            api_errors.append(f"Hunter broad: {e}")
-            logger.warning("hunter_broad_failed", error=str(e))
-
-    # ── 4. Company website scraper (FREE) ─────────────────────────────────
+    # ── 2. Company website scraper (free) ─────────────────────────────────
     if domain:
         try:
             scraped = await _scrape_company_website(company, domain)
             if scraped:
                 all_contacts.append(scraped)
-                logger.info("website_scrape_found", company=company, email=scraped["email"])
+                logger.info("website_scrape_found", company=company,
+                            email=scraped["email"])
         except Exception as e:
             api_errors.append(f"Website scraper: {e}")
             logger.warning("website_scrape_failed", error=str(e))
 
-    # ── 5. Apify Contact Scraper ───────────────────────────────────────────
-    if settings.APIFY_API_KEY and domain and not _has_hr_contact(all_contacts):
-        try:
-            apify_contacts = await _apify_contact_scraper(company, domain, settings.APIFY_API_KEY)
-            all_contacts.extend(apify_contacts)
-        except Exception as e:
-            api_errors.append(f"Apify: {e}")
-            logger.warning("apify_failed", error=str(e))
-
-    # ── 6. Prospeo ─────────────────────────────────────────────────────────
-    if settings.PROSPEO_API_KEY and domain and not _has_hr_contact(all_contacts):
-        try:
-            p = await _search_prospeo(company, domain, settings.PROSPEO_API_KEY)
-            if p:
-                all_contacts.append(p)
-        except Exception as e:
-            api_errors.append(f"Prospeo: {e}")
-            logger.warning("prospeo_failed", error=str(e))
-
-    # ── 7. SerpAPI — HR / CEO / dept-head finder ──────────────────────────
-    # Always run SerpAPI regardless of HR status: it finds CEOs + dept heads
-    # too, giving send_to_all_recipients more real recipients.
+    # ── 3. SerpAPI — LinkedIn people search (supplements Hunter) ──────────
     if settings.SERPAPI_API_KEY and domain:
         try:
-            serp_contacts = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
+            serp_contacts = await _search_serpapi_hr(company, domain,
+                                                      settings.SERPAPI_API_KEY)
             all_contacts.extend(serp_contacts)
-            logger.info("serpapi_contacts", company=company, found=len(serp_contacts))
+            if serp_contacts:
+                logger.info("serpapi_found", company=company,
+                            count=len(serp_contacts))
         except Exception as e:
             api_errors.append(f"SerpAPI: {e}")
             logger.warning("serpapi_failed", error=str(e))
+
+    # ── 4. Apify / Prospeo — ONLY when Hunter found zero people ───────────
+    if not hunter_found_anyone:
+        if settings.APIFY_API_KEY and domain:
+            try:
+                apify_contacts = await _apify_contact_scraper(
+                    company, domain, settings.APIFY_API_KEY
+                )
+                all_contacts.extend(apify_contacts)
+                if apify_contacts:
+                    logger.info("apify_found", company=company,
+                                count=len(apify_contacts))
+            except Exception as e:
+                api_errors.append(f"Apify: {e}")
+                logger.warning("apify_failed", error=str(e))
+
+        if settings.PROSPEO_API_KEY and domain and not _has_hr_contact(all_contacts):
+            try:
+                p = await _search_prospeo(company, domain, settings.PROSPEO_API_KEY)
+                if p:
+                    all_contacts.append(p)
+            except Exception as e:
+                api_errors.append(f"Prospeo: {e}")
+                logger.warning("prospeo_failed", error=str(e))
 
     # ── Deduplicate collected contacts ─────────────────────────────────────
     all_contacts = _deduplicate(all_contacts)
