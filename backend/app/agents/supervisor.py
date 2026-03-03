@@ -846,6 +846,7 @@ Return ONLY valid JSON."""
                 application_url=job_data.get("application_url"),
                 posted_date=job_data.get("posted_date"),
                 source=job_data.get("source", "ai_generated"),
+                company_domain=job_data.get("company_domain") or None,
                 match_score=job_data.get("match_score"),
                 matching_skills=job_data.get("matching_skills", []),
                 missing_skills=job_data.get("missing_skills", []),
@@ -971,6 +972,13 @@ async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
                         source=result.get("source"),
                         verified=result.get("verified", False),
                     ))
+                    # Persist Hunter-resolved domain so future lookups skip guessing
+                    hunter_domain = result.get("resolved_domain")
+                    if hunter_domain:
+                        from app.db.models import Job as _Job
+                        job_row = await db.get(_Job, job_id)
+                        if job_row and not job_row.company_domain:
+                            job_row.company_domain = hunter_domain
                     await db.commit()
                 await event_bus.emit(user_id, "hr_stream", {
                     "phase": "found",
@@ -1502,8 +1510,14 @@ async def _handle_tailor_apply(
     else:
         # Fallback live lookup (e.g. manual tailor triggered outside of search flow)
         _hr_already_saved = False
-        company_domain = getattr(job, "company_domain", None)
+        company_domain = job.company_domain or None
         hr_contact = await find_hr_contact(job.company, job.title, company_domain=company_domain, user_id=user_id)
+
+        # Save Hunter-resolved domain back to the Job record for future lookups
+        hunter_domain = hr_contact.get("resolved_domain")
+        if hunter_domain and not job.company_domain:
+            job.company_domain = hunter_domain
+            await db.flush()
 
         if hr_contact.get("source") == "not_found":
             await _log_execution(db, user_id, "tailor", "hr_finder", f"find_hr:{job.company}",

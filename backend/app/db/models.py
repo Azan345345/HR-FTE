@@ -110,6 +110,7 @@ class Job(Base):
     posted_date = Column(String(50), default=None)
     application_url = Column(Text, default=None)
     source = Column(String(50), nullable=False)
+    company_domain = Column(String(255), default=None)   # verified domain for Hunter lookups
     match_score = Column(Float, default=None)
     matching_skills = Column(JSON, default=list)
     missing_skills = Column(JSON, default=list)

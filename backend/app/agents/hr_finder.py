@@ -117,13 +117,43 @@ async def _find_hr_contact_impl(
     """Find verified HR contacts. Returns all discovered recipients."""
     from app.config import settings
 
-    guessed = company_domain or _guess_domain(company)
-    domain = await _resolve_domain(guessed) if guessed else guessed
     api_errors = []
 
     # Accumulated contacts across all strategies.
     # Each entry: {email, name, title, role, confidence, source}
     all_contacts: list[dict] = []
+
+    # resolved_domain tracks the best known domain across all strategies so
+    # later strategies (website scrape, pattern fallback) use the right one.
+    resolved_domain: Optional[str] = company_domain or None
+
+    # ── 0. Hunter.io Company-Name Search (MUST-USE — no domain needed) ────
+    # Hunter resolves the company → domain mapping itself; this is the most
+    # reliable strategy and runs first regardless of whether we have a domain.
+    if settings.HUNTER_API_KEY:
+        try:
+            contacts, hunter_domain = await _hunter_company_search(
+                company, settings.HUNTER_API_KEY
+            )
+            if contacts:
+                all_contacts.extend(contacts)
+                logger.info("hunter_company_search", company=company,
+                            domain=hunter_domain, found=len(contacts))
+            # Always trust the domain Hunter returns — it's authoritative.
+            if hunter_domain:
+                resolved_domain = hunter_domain
+        except Exception as e:
+            api_errors.append(f"Hunter company search: {e}")
+            logger.warning("hunter_company_search_failed", company=company, error=str(e))
+    else:
+        logger.warning("hunter_api_key_missing", msg="HUNTER_API_KEY not set — set it in env vars for best results")
+
+    # Fall back to guessing only when Hunter didn't return a domain
+    if not resolved_domain:
+        guessed = _guess_domain(company)
+        resolved_domain = await _resolve_domain(guessed) if guessed else guessed
+
+    domain = resolved_domain
 
     # ── 1. Hunter.io Domain Search (HR department) ─────────────────────────
     if settings.HUNTER_API_KEY and domain:
@@ -253,6 +283,7 @@ async def _find_hr_contact_impl(
             "confidence_score": 0.0,
             "verified": False,
             "source": "not_found",
+            "resolved_domain": domain,
             "all_recipients": [],
             "api_errors": api_errors,
         }
@@ -271,9 +302,82 @@ async def _find_hr_contact_impl(
         "confidence_score": primary.get("confidence", 0) / 100,
         "verified":        primary.get("verified", False),
         "source":          primary.get("source", "unknown"),
-        "all_recipients":  all_contacts,   # full list for multi-send
+        "resolved_domain": domain,          # authoritative domain (Hunter-verified)
+        "all_recipients":  all_contacts,    # full list for multi-send
         "api_errors":      api_errors,
     }
+
+
+# ── Hunter.io: Company-Name Search (strategy 0) ───────────────────────────────
+
+async def _hunter_company_search(
+    company: str,
+    api_key: str,
+) -> tuple[list[dict], Optional[str]]:
+    """Call Hunter /domain-search with company= param (no domain needed).
+
+    Hunter resolves company → domain internally — much more reliable than
+    guessing the TLD.  Returns (contacts, resolved_domain).
+    """
+    import httpx
+
+    params = {
+        "company": company,
+        "api_key": api_key,
+        "limit": 20,
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            "https://api.hunter.io/v2/domain-search",
+            params=params,
+        )
+        if resp.status_code == 401:
+            raise ValueError("Hunter API key invalid or quota exhausted")
+        if resp.status_code == 429:
+            raise ValueError("Hunter API rate limit hit")
+        resp.raise_for_status()
+        data = resp.json()
+
+    payload = data.get("data") or {}
+    hunter_domain: Optional[str] = payload.get("domain") or None
+    emails = payload.get("emails") or []
+
+    contacts: list[dict] = []
+    for entry in emails:
+        email = (entry.get("value") or "").strip().lower()
+        if not email or "@" not in email:
+            continue
+        local = email.split("@")[0]
+        if any(b in local for b in ("noreply", "no-reply", "bounce", "spam", "unsubscribe")):
+            continue
+
+        position = (entry.get("position") or "").lower()
+        seniority = (entry.get("seniority") or "").lower()
+        dept = (entry.get("department") or "").lower()
+        first = entry.get("first_name") or ""
+        last = entry.get("last_name") or ""
+        name = f"{first} {last}".strip() or ""
+        confidence = entry.get("confidence") or 0
+
+        verification = entry.get("verification") or {}
+        ver_status = (verification.get("status") or "").lower()
+        verified = ver_status in ("valid",)
+
+        role = _classify_role(position, dept, seniority, local)
+
+        contacts.append({
+            "email":      email,
+            "name":       name,
+            "title":      entry.get("position") or "",
+            "role":       role,
+            "confidence": confidence,
+            "verified":   verified,
+            "linkedin":   "",
+            "source":     "hunter_company",
+        })
+
+    return contacts, hunter_domain
 
 
 # ── Hunter.io: Domain Search ──────────────────────────────────────────────────
