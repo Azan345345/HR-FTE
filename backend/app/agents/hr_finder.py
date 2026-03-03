@@ -232,12 +232,14 @@ async def _find_hr_contact_impl(
             api_errors.append(f"Prospeo: {e}")
             logger.warning("prospeo_failed", error=str(e))
 
-    # ── 7. SerpAPI HR snippet search ───────────────────────────────────────
-    if settings.SERPAPI_API_KEY and domain and not _has_hr_contact(all_contacts):
+    # ── 7. SerpAPI — HR / CEO / dept-head finder ──────────────────────────
+    # Always run SerpAPI regardless of HR status: it finds CEOs + dept heads
+    # too, giving send_to_all_recipients more real recipients.
+    if settings.SERPAPI_API_KEY and domain:
         try:
-            s = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
-            if s:
-                all_contacts.append(s)
+            serp_contacts = await _search_serpapi_hr(company, domain, settings.SERPAPI_API_KEY)
+            all_contacts.extend(serp_contacts)
+            logger.info("serpapi_contacts", company=company, found=len(serp_contacts))
         except Exception as e:
             api_errors.append(f"SerpAPI: {e}")
             logger.warning("serpapi_failed", error=str(e))
@@ -833,54 +835,186 @@ async def _search_prospeo(company: str, domain: str, api_key: str) -> Optional[d
     return None
 
 
-# ── Strategy: SerpAPI HR search (snippet emails only) ────────────────────────
+# ── Strategy: SerpAPI — multi-signal HR / CEO / dept-head finder ─────────────
 
-async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> Optional[dict]:
+async def _search_serpapi_hr(company: str, domain: str, serpapi_key: str) -> list[dict]:
+    """Find HR, CEO, and department-head contacts using SerpAPI.
+
+    Three passes:
+      1. Direct email harvest — scans indexed pages / PDFs for literal addresses.
+      2. LinkedIn people search — finds HR / CEO names, builds likely email addresses.
+      3. Contact-page scrape — fetches the company's own contact / about pages.
+    Returns the highest-confidence contact found, or None.
+    """
     import httpx
+    from bs4 import BeautifulSoup
 
     EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
-    company_clean = _norm_company(company)
-    queries = [
-        f'"{company}" recruiter OR "talent acquisition" OR "HR manager" email',
-        f'site:{domain} recruiter OR HR OR talent email',
-        f'"{company_clean}" recruiter LinkedIn',
+    bare = domain.lstrip("www.")
+
+    # ── pass 1: direct email harvest ──────────────────────────────────────────
+    direct_queries = [
+        f'"{company}" "hr@" OR "careers@" OR "recruiting@" OR "talent@" OR "hiring@"',
+        f'site:{bare} email HR recruiter contact',
+        f'"{company}" CEO OR "chief executive" email contact',
     ]
+    found_emails: list[dict] = []
 
     async with httpx.AsyncClient(timeout=20) as client:
-        for query in queries:
+        for query in direct_queries:
             try:
                 resp = await client.get("https://serpapi.com/search", params={
                     "engine": "google", "q": query,
-                    "api_key": serpapi_key, "num": 5, "no_cache": "true",
+                    "api_key": serpapi_key, "num": 10,
                 })
                 resp.raise_for_status()
                 data = resp.json()
                 for result in data.get("organic_results", []):
-                    raw_text = f"{result.get('title','')} {result.get('snippet','')}"
-                    for email in EMAIL_RE.findall(raw_text):
-                        email = email.lower()
+                    raw = (
+                        f"{result.get('title', '')} "
+                        f"{result.get('snippet', '')} "
+                        f"{result.get('link', '')}"
+                    )
+                    for email in EMAIL_RE.findall(raw):
+                        email = email.lower().rstrip(".")
                         if "@" not in email:
                             continue
-                        email_domain = email.split("@")[1]
-                        if domain not in email_domain and email_domain not in domain:
+                        em_domain = email.split("@")[1]
+                        if bare not in em_domain and em_domain not in bare:
                             continue
                         local = email.split("@")[0]
-                        if any(b in local for b in ("noreply", "no-reply", "admin",
-                                                     "sales", "legal", "privacy")):
+                        if any(b in local for b in (
+                            "noreply", "no-reply", "bounce", "spam",
+                            "unsubscribe", "donotreply",
+                        )):
                             continue
-                        verified = await _verify_email_domain(email)
                         role = _classify_role("", "", "", local)
-                        return {
-                            "email": email, "name": "HR Team",
-                            "title": "HR / Recruiter",
-                            "role": role,
-                            "confidence": 75 if verified else 55,
-                            "verified": verified,
-                            "source": "serpapi",
-                        }
+                        found_emails.append({
+                            "email": email, "name": "", "title": "",
+                            "role": role, "confidence": 70,
+                            "verified": False, "source": "serpapi_direct",
+                        })
             except Exception as e:
-                logger.debug("serpapi_hr_failed", query=query[:60], error=str(e))
-    return None
+                logger.debug("serpapi_direct_failed", query=query[:60], error=str(e))
+
+    # ── pass 2: LinkedIn people search → name → email pattern ─────────────────
+    # Search LinkedIn for HR managers, recruiters, CEO, dept heads at this company.
+    linkedin_queries = [
+        f'site:linkedin.com/in "{company}" "talent acquisition" OR "HR manager" OR "recruiter" OR "people operations"',
+        f'site:linkedin.com/in "{company}" CEO OR "chief executive" OR "managing director" OR "founder"',
+        f'site:linkedin.com/in "{company}" "head of" OR "director of" OR "VP" OR "vice president"',
+    ]
+    role_hints = ["hr", "executive", "management"]
+    name_contacts: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for query, role_hint in zip(linkedin_queries, role_hints):
+            try:
+                resp = await client.get("https://serpapi.com/search", params={
+                    "engine": "google", "q": query,
+                    "api_key": serpapi_key, "num": 5,
+                })
+                resp.raise_for_status()
+                data = resp.json()
+                for result in data.get("organic_results", []):
+                    title = result.get("title", "")
+                    snippet = result.get("snippet", "")
+                    # LinkedIn profile titles are usually "Name - Title at Company"
+                    name_part = title.split(" - ")[0].strip() if " - " in title else ""
+                    job_title = ""
+                    if " - " in title:
+                        rest = title.split(" - ", 1)[1]
+                        job_title = rest.split(" at ")[0].strip() if " at " in rest else rest
+                    if not name_part or len(name_part.split()) < 2:
+                        continue
+                    # Build likely email addresses from name + domain
+                    parts = name_part.lower().split()
+                    first, last = parts[0], parts[-1]
+                    first_clean = re.sub(r"[^a-z]", "", first)
+                    last_clean = re.sub(r"[^a-z]", "", last)
+                    if not first_clean or not last_clean:
+                        continue
+                    candidates = [
+                        f"{first_clean}.{last_clean}@{bare}",
+                        f"{first_clean[0]}{last_clean}@{bare}",
+                        f"{first_clean}{last_clean}@{bare}",
+                        f"{first_clean}@{bare}",
+                    ]
+                    for candidate in candidates:
+                        name_contacts.append({
+                            "email": candidate,
+                            "name": name_part,
+                            "title": job_title or role_hint,
+                            "role": role_hint,
+                            "confidence": 55,
+                            "verified": False,
+                            "source": "serpapi_linkedin",
+                        })
+            except Exception as e:
+                logger.debug("serpapi_linkedin_failed", query=query[:60], error=str(e))
+
+    # ── pass 3: scrape the company's own contact / about page ─────────────────
+    scraped: list[dict] = []
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36"}
+        for path in ["/contact", "/about", "/team", "/careers", "/contact-us"]:
+            try:
+                async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers=headers) as c:
+                    r = await c.get(f"https://{bare}{path}")
+                    if r.status_code != 200:
+                        continue
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    for email in set(EMAIL_RE.findall(r.text)):
+                        el = email.lower()
+                        em_domain = el.split("@")[1] if "@" in el else ""
+                        if bare not in em_domain and em_domain not in bare:
+                            continue
+                        local = el.split("@")[0]
+                        if any(b in local for b in ("noreply", "bounce", "spam")):
+                            continue
+                        role = _classify_role("", "", "", local)
+                        scraped.append({
+                            "email": el, "name": "", "title": "",
+                            "role": role, "confidence": 65,
+                            "verified": False, "source": "contact_page",
+                        })
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("serpapi_contact_scrape_failed", error=str(e))
+
+    # ── combine, verify MX, de-dup, return all ────────────────────────────────
+    all_candidates = found_emails + scraped + name_contacts
+    if not all_candidates:
+        return []
+
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for c in all_candidates:
+        if c["email"] not in seen:
+            seen.add(c["email"])
+            unique.append(c)
+
+    verified_contacts: list[dict] = []
+    for c in unique[:20]:  # limit MX checks to first 20
+        if await _verify_email_domain(c["email"]):
+            verified_contacts.append({**c, "verified": True,
+                                       "confidence": c["confidence"] + 10})
+        else:
+            verified_contacts.append(c)
+
+    # Sort: direct hits first, then by role priority, then confidence
+    _ROLE_PRIORITY = {"hr": 0, "executive": 1, "management": 2, "generic": 3}
+    verified_contacts.sort(key=lambda x: (
+        0 if x["source"] != "serpapi_linkedin" else 1,
+        _ROLE_PRIORITY.get(x["role"], 9),
+        -x["confidence"],
+    ))
+
+    logger.info("serpapi_hr_found", company=company,
+                total=len(verified_contacts),
+                roles=list({c["role"] for c in verified_contacts}))
+    return verified_contacts
 
 
 # ── Batch HR Contact Finder ───────────────────────────────────────────────────
