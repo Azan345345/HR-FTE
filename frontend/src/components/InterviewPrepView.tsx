@@ -457,6 +457,9 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     // Ref so handleSelectJob always sees current preps without needing it as dep
     const prepsRef = useRef<any[]>([]);
+    // Ref so the async load callback can read the latest focusedJobId
+    const focusedJobRef = useRef<string | null>(focusedJobId);
+    useEffect(() => { focusedJobRef.current = focusedJobId; }, [focusedJobId]);
 
     // ── Data loading — incremental so jobs appear fast ────────────────────────
     useEffect(() => {
@@ -471,7 +474,33 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
             .catch(() => {});
 
         listInterviewPreps()
-            .then(pd => setPreps((pd as any).preps || []))
+            .then(pd => {
+                const loaded: any[] = (pd as any).preps || [];
+                setPreps(loaded);
+                if (loaded.length === 0) return;
+
+                // Fix race condition: focusedJobId effect may have fired before
+                // preps loaded (prepsRef was still empty). Re-select here using
+                // the loaded array directly.
+                const target = focusedJobRef.current;
+                if (target) {
+                    const match = loaded.find(p => p.job_id === target);
+                    if (match) {
+                        setSelectedJobId(target);
+                        setActivePrep(match);
+                        setGenerating(match.status === "generating");
+                        setActiveTab("overview");
+                        return;
+                    }
+                }
+                // Auto-select the most recent prep when user navigates to the
+                // tab directly (no focusedJobId) so they never see a blank panel.
+                const recent = loaded[0]; // ordered by created_at desc
+                setSelectedJobId(recent.job_id);
+                setActivePrep(recent);
+                setGenerating(recent.status === "generating");
+                setActiveTab("overview");
+            })
             .catch(() => {});
     }, []);
 
