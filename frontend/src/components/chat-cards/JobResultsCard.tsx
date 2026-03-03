@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ExternalLink, Briefcase, MapPin, DollarSign, Zap, XCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { ExternalLink, Briefcase, MapPin, DollarSign, Zap, Mail, Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
@@ -44,6 +44,22 @@ function MatchBadge({ score }: { score: number }) {
   );
 }
 
+function HrBadge({ hrFound }: { hrFound?: boolean }) {
+  if (hrFound === true) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 flex-shrink-0">
+        <Mail size={8} /> HR
+      </span>
+    );
+  }
+  // undefined or false = still searching (background task)
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-50 text-slate-400 border border-slate-200 flex-shrink-0">
+      <Loader2 size={8} className="animate-spin" /> HR
+    </span>
+  );
+}
+
 export function JobResultsCard({ metadata, onSendAction }: Props) {
   const { jobs } = metadata;
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
@@ -64,7 +80,6 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
     >
       {jobs.map((job, idx) => {
         const isExpanded = expandedJobs.has(job.id);
-        const isNoHR = job.hr_found === false;
 
         return (
           <motion.div
@@ -72,11 +87,7 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, delay: 0.1 + idx * 0.07 }}
-            className={`rounded-xl border transition-colors ${
-              isNoHR
-                ? "border-red-200 bg-red-50/40 opacity-80"
-                : "border-slate-200 bg-slate-50 hover:border-rose-200 hover:bg-rose-50/30"
-            }`}
+            className="rounded-xl border border-slate-200 bg-slate-50 hover:border-rose-200 hover:bg-rose-50/30 transition-colors"
           >
             {/* ── Collapsed header (always visible) ── */}
             <button
@@ -89,6 +100,7 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
                 </p>
                 <p className="text-[11px] text-slate-500 font-sans truncate">{job.company}</p>
               </div>
+              <HrBadge hrFound={job.hr_found} />
               <MatchBadge score={job.match_score || 0} />
               {job.job_type && (
                 <Badge variant="secondary" className="text-[10px] flex-shrink-0 bg-white border-slate-200 hidden sm:inline-flex">
@@ -154,23 +166,16 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
                       </div>
                     )}
 
-                    {/* Actions */}
+                    {/* Actions — button always shown; HR status is informational only */}
                     <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
-                      {isNoHR ? (
-                        <div className="flex-1 flex items-center gap-1.5 text-[11px] text-red-500 font-sans font-medium">
-                          <XCircle size={13} className="flex-shrink-0" />
-                          No verified HR email — direct application unavailable
-                        </div>
-                      ) : (
-                        <Button
-                          size="sm"
-                          className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
-                          onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
-                        >
-                          <Briefcase size={12} />
-                          Tailor CV & Apply
-                        </Button>
-                      )}
+                      <Button
+                        size="sm"
+                        className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
+                        onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
+                      >
+                        <Briefcase size={12} />
+                        Tailor CV & Apply
+                      </Button>
                       {job.application_url && (
                         <Button
                           size="sm"

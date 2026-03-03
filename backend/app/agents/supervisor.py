@@ -1157,28 +1157,35 @@ async def _handle_continuation(
 async def _handle_auto_pipeline(
     user_id: str, message: str, db: AsyncSession, session_id: str = None
 ) -> Tuple[str, Optional[dict]]:
-    """Full automated pipeline: search → tailor → approve → send for all found jobs."""
+    """Find jobs matching user criteria and present them as an interactive card.
+
+    HR contacts are looked up in the background. The user reviews each job
+    and clicks 'Tailor CV & Apply' — the full approval flow (CV review →
+    email review → send) is triggered per-job, never auto-approved.
+    """
     llm = get_llm(task="parse_automation_query")
-    prompt = f"""Extract automation parameters from: "{message}"
-Return JSON: {{"count": 5, "location": "city/country or null", "query": "job role or industry"}}
-Return ONLY valid JSON."""
+    prompt = f"""Extract job search parameters from this message: "{message}"
+Return JSON: {{"count": 5, "location": "city/country or null", "query": "job title or role"}}
+Return ONLY valid JSON, nothing else."""
 
     try:
         resp = await llm.ainvoke(prompt)
         content = resp.content if hasattr(resp, "content") else str(resp)
         params = json.loads(content.strip().replace("```json", "").replace("```", ""))
     except Exception:
-        # Keep the original message as query so we never lose user intent
         params = {"count": 5, "location": None, "query": message}
 
     count = min(int(params.get("count") or 5), 8)
     location = params.get("location")
     query = params.get("query") or message
 
-    await event_bus.emit_workflow_update(user_id, "supervisor", [], ["job_hunter", "cv_tailor", "hr_finder", "email_sender"])
+    await event_bus.emit_workflow_update(user_id, "supervisor", [], ["job_hunter", "hr_finder"])
 
-    # Step 1: Find jobs
-    _, search_meta = await _handle_job_search_v2(user_id, session_id or "", query, db, limit=count)
+    # Find jobs — HR lookup runs automatically in background via asyncio.create_task
+    text, search_meta = await _handle_job_search_v2(
+        user_id, session_id or "", query, db, limit=count
+    )
+
     if not search_meta:
         return ("I couldn't find matching jobs. Please try a more specific search.", None)
 
@@ -1187,70 +1194,15 @@ Return ONLY valid JSON."""
         return ("No jobs were found for that query. Try different keywords.", None)
 
     location_str = f" in **{location}**" if location else ""
-    await event_bus.emit_log_entry(
-        user_id, "supervisor", "Auto-Pipeline Started",
-        f"Running full pipeline for {len(jobs)} jobs{location_str}"
+    response_text = (
+        f"Found **{len(jobs)} positions** for \"{query}\"{location_str}. "
+        "HR contacts are being found in the background — "
+        "jobs will update with **✓ HR** badges as contacts are discovered.\n\n"
+        "Click **'Tailor CV & Apply'** on any job to start — "
+        "you'll **review and approve** your tailored CV and email before anything is sent."
     )
 
-    results = []
-    for i, job_entry in enumerate(jobs):
-        job_id = job_entry["id"]
-        job_title = job_entry.get("title", "Position")
-        job_company = job_entry.get("company", "Company")
-
-        await event_bus.emit_workflow_update(
-            user_id, "cv_tailor",
-            ["job_hunter"] + [j["id"] for j in jobs[:i]],
-            [j["id"] for j in jobs[i + 1:]],
-        )
-
-        # Step 2: Tailor CV + find HR + compose email
-        _, tailor_meta = await _handle_tailor_apply(user_id, job_id, db)
-        if not tailor_meta or not tailor_meta.get("application_id"):
-            results.append({"title": job_title, "company": job_company, "status": "tailor_failed"})
-            continue
-
-        app_id = tailor_meta["application_id"]
-
-        # Step 3: Auto-approve + generate PDF
-        await event_bus.emit_workflow_update(user_id, "doc_generator", ["job_hunter", "cv_tailor"], [])
-        _, approve_meta = await _handle_approve_cv(user_id, app_id, db)
-        if not approve_meta:
-            results.append({"title": job_title, "company": job_company, "status": "approve_failed"})
-            continue
-
-        # Step 4: Send email
-        await event_bus.emit_workflow_update(user_id, "email_sender", ["job_hunter", "cv_tailor", "doc_generator"], [])
-        _, send_meta = await _handle_send_email(user_id, app_id, db)
-        sent_ok = bool(send_meta)
-        results.append({
-            "title": job_title, "company": job_company,
-            "status": "sent" if sent_ok else "send_failed",
-            "ats_score": tailor_meta.get("ats_score", 0),
-            "match_score": tailor_meta.get("match_score", 0),
-        })
-
-    # Build summary
-    sent = [r for r in results if r["status"] == "sent"]
-    failed = [r for r in results if r["status"] != "sent"]
-
-    lines = [f"## Automated Pipeline Complete\n"]
-    lines.append(f"**{len(sent)}/{len(results)} applications sent**{location_str}\n")
-    for r in sent:
-        lines.append(f"✅ **{r['title']}** at {r['company']} — ATS: {r.get('ats_score',0)}% | Match: {r.get('match_score',0)}%")
-    for r in failed:
-        lines.append(f"⚠️ **{r['title']}** at {r['company']} — {r['status'].replace('_', ' ')}")
-
-    lines.append("\nCheck **Applications** in the sidebar for full details. "
-                 "Click **'Prep Interview'** on any sent application to start preparing!")
-
-    await event_bus.emit_workflow_update(user_id, "supervisor", ["job_hunter", "cv_tailor", "doc_generator", "email_sender"], [])
-
-    return ("\n".join(lines), {
-        "type": "job_results",
-        "search_id": search_meta.get("search_id"),
-        "jobs": jobs,
-    })
+    return (response_text, search_meta)
 
 
 # ── CV Tailor Intent Handler ──────────────────────────────────────────────────
