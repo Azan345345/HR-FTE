@@ -682,6 +682,9 @@ async def _maybe_ask_cv_selection(
     cvs = cv_result.scalars().all()
 
     if not cvs:
+        # Job search can proceed without a CV (scoring is skipped, tailoring still requires one)
+        if pending_intent == "job_search":
+            return None, None
         return (
             "Please **upload your CV** first using the upload button in the sidebar. "
             "I need it to tailor applications and match you to the right jobs.",
