@@ -90,7 +90,7 @@ async def process_chat_message(
     try:
         # ── Slash-command pipeline override (bypasses LLM intent detection) ──
         if pipeline and not message.startswith("__"):
-            history = await _load_conversation_history(user_id, session_id, db, limit=25)
+            history = await _load_conversation_history(user_id, session_id, db, limit=20)
             if pipeline == "job_search":
                 result = await _handle_job_search_v2(user_id, session_id, _strip_file_block(message), db)
             elif pipeline == "cv_general":
@@ -172,11 +172,12 @@ async def process_chat_message(
 
         else:
             # ── Load conversation history for context-aware responses ─────────
-            history = await _load_conversation_history(user_id, session_id, db, limit=25)
+            history = await _load_conversation_history(user_id, session_id, db, limit=20)
             clean_msg = _strip_file_block(message)
 
             # ── Fast keyword pre-classifier for unambiguous signals ───────────
             keyword_intent = _keyword_classify(clean_msg)
+            logger.info("supervisor_keyword_intent", intent=keyword_intent, message=clean_msg[:80])
 
             if keyword_intent == "continuation":
                 result = await _handle_continuation(user_id, session_id, history, db, message=clean_msg)
@@ -188,6 +189,26 @@ async def process_chat_message(
                     "I'll automatically parse and analyze it for you.",
                     None,
                 )
+
+            elif keyword_intent == "automated_apply":
+                # Direct full pipeline — no LLM needed for routing
+                result = await _handle_auto_pipeline(user_id, clean_msg, db, session_id=session_id)
+
+            elif keyword_intent == "job_search":
+                # Explicit job listing request — show job cards via orchestrator
+                result = await _orchestrate_agents(
+                    user_id, session_id, clean_msg, history, ["job_search"], db
+                )
+
+            elif keyword_intent in ("cv_tailor", "cv_analysis", "cv_general"):
+                result = await _handle_cv_general_request(user_id, clean_msg, history, db)
+
+            elif keyword_intent == "interview_prep":
+                result = await _handle_interview_prep_intent(user_id, message, db)
+
+            elif keyword_intent == "status":
+                text = await _handle_status_request(user_id, db)
+                result = (text, None)
 
             else:
                 # ── Intelligent multi-agent pipeline planner ──────────────────
@@ -355,6 +376,9 @@ _CONTINUATION_SET = frozenset({
     "send", "send it", "confirm", "approve", "sounds good", "alright",
     "yep", "yup", "next", "go ahead", "absolutely", "correct", "right",
     "great", "perfect", "done", "please", "let's go", "start",
+    # Short follow-up words that always mean "continue" in context
+    "any", "all", "whatever", "anything", "all of them", "any of them",
+    "doesn't matter", "no preference", "up to you", "you decide",
 })
 
 _RE_JOB_SEARCH = re.compile(
@@ -370,6 +394,15 @@ _RE_JOB_SEARCH = re.compile(
 _RE_AUTO_APPLY = re.compile(
     r"\b(apply\s+to\s+all|auto(mate|matic(ally)?)\s+apply|apply\s+for\s+me|run\s+the\s+pipeline"
     r"|do\s+everything\s+for\s+me|send\s+to\s+all\s+companies|apply\s+automatically)\b",
+    re.IGNORECASE,
+)
+
+# "apply for N [role] in [location]" — user wants job search + full pipeline
+_RE_APPLY_SEARCH = re.compile(
+    r"\bapply\s+(?:for\s+)?(?:\d+\s+)?(?:\w+\s+){0,5}(?:jobs?|positions?|roles?|openings?|vacancies?)\b"
+    r"|\bapply\s+(?:for\s+)?(?:\w+\s+){1,5}(?:in|at|across|within)\s+\w"
+    r"|\bfind\s+(?:and\s+)?apply\b"
+    r"|\b(?:search|find|get)\s+(?:me\s+)?(?:\d+\s+)?(?:\w+\s+){0,4}jobs?\s+(?:and\s+)?apply\b",
     re.IGNORECASE,
 )
 
@@ -475,9 +508,16 @@ def _keyword_classify(message: str) -> Optional[str]:
         return "continuation"
     if len(tokens) <= 3 and tokens & _CONTINUATION_SET and len(msg_lower) < 30:
         return "continuation"
+    # Very short messages (1-2 words) with no recognisable action → continuation
+    if len(tokens) <= 2 and len(msg_lower) < 20:
+        return "continuation"
 
     # 2. Explicit full-pipeline automation
     if _RE_AUTO_APPLY.search(msg_stripped):
+        return "automated_apply"
+
+    # 3. "apply for N role in location" patterns → full pipeline (job search + apply)
+    if _RE_APPLY_SEARCH.search(msg_stripped):
         return "automated_apply"
 
     # 3. CV operations (specific, explicit)
@@ -2940,79 +2980,67 @@ Job Description: \"\"\"{job_description[:800]}\"\"\""""
 async def _plan_agents(llm, message: str, history: list) -> list:
     """LLM-based pipeline planner.
 
-    Analyzes the user's message and returns an ordered list of agent names
-    that should run to fulfil the request. One or many agents may be returned.
-
-    Agent names:
-      job_search   — search the web for job listings
-      cv_tailor    — tailor CV against a specific job description
-      hr_finder    — find HR contact email for a company / domain
-      email_review — compose application email + show approval card
-      interview_prep — generate interview Q&A + study plan
-      cv_general   — general CV improvements / analysis / ATS tips
-      status       — show pipeline status (jobs, applications, emails)
-      clarify      — ask user to clarify their vague request
-      general      — general career advice / Q&A
+    Analyzes the user's message + last 20 conversation messages and returns
+    an ordered list of agent names to run.
     """
+    # Build full history context (up to 20 messages)
     history_block = "(no prior messages)"
     if history:
-        recent = [m for m in history[-8:] if not m.get("content", "").startswith("__")][-5:]
+        recent = [m for m in history[-20:] if not m.get("content", "").startswith("__")]
         if recent:
             history_block = "\n".join(
-                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:200]}"
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:300]}"
                 for m in recent
             )
 
     prompt = f"""You are the pipeline orchestrator for CareerAgent — an AI job-application assistant.
-Decide which agents to run for the user's message, in execution order.
+Analyze the user's message (and conversation history for context) and decide which agents to run.
 
 AVAILABLE AGENTS:
-  job_search    — Search the internet for job listings by role/location/keywords
-  cv_tailor     — Tailor the user's CV for a specific job description
-  hr_finder     — Find HR contact email for a company or domain
-  email_review  — Compose application email and show it for user approval before sending
+  job_search    — Search the internet for job listings by role/location
+  cv_tailor     — Tailor user's CV for a specific job description
+  hr_finder     — Find HR contact email for a company/domain
+  email_review  — Compose application email + show approval card before sending
   interview_prep — Generate interview Q&A, study plan, salary data
-  cv_general    — General CV improvements, rewrites, ATS analysis, skill gaps
-  status        — Show pipeline status (saved jobs, applications, sent emails)
-  clarify       — Ask user to clarify a vague request
-  general       — General career advice, salary info, industry trends, Q&A
+  cv_general    — General CV improvements, rewrites, ATS analysis
+  status        — Show pipeline status (applications, jobs found, emails sent)
+  clarify       — ONLY use when truly no actionable intent can be determined
+  general       — General career advice / Q&A
 
-DECISION RULES (apply in order, stop at first match):
-1. Message says "find/search/look for jobs [role/location]" (any job-search phrasing with no other task)
-   → ["job_search","cv_tailor","hr_finder","email_review"]  ← full automated pipeline
-2. Message contains a job description AND an HR email AND says "apply"/"send application"
-   → ["email_review"]  ← HR already provided, skip finder
-3. Message contains a job description AND says "apply"/"send application"/"send my CV"
-   → ["cv_tailor","hr_finder","email_review"]
-4. Message says "find HR email/contact for X" or "find HR at X" with no email task
-   → ["hr_finder"]
-5. Message says "find HR for X AND send email/apply"
-   → ["hr_finder","email_review"]
-6. Message contains an HR email and says "write email"/"send application"
-   → ["email_review"]
-7. Message says "prepare for interview"/"practice questions"/"mock interview"
-   → ["interview_prep"]
-8. Message says "apply to this job" + "and prepare for interview" (two tasks)
-   → ["cv_tailor","hr_finder","email_review","interview_prep"]
-9. Message says "write email to HR AND prep for interview"
-   → ["email_review","interview_prep"]
-10. Message says "tailor my CV for [specific job/company]"
-    → ["cv_tailor"]
-11. Message says "improve/fix/rewrite my CV" (no specific job)
-    → ["cv_general"]
-12. Message asks about their saved jobs, applications, or pipeline state
-    → ["status"]
-13. Message is very vague, one word, or unclear with no actionable intent
-    → ["clarify"]
-14. Everything else (career advice, salary Q, industry question)
-    → ["general"]
+CRITICAL RULES — read carefully:
 
-Return ONLY a JSON array of agent names — no explanation, no markdown.
+RULE A: Any message about finding jobs, applying to jobs by role/location, or wanting job applications
+sent → ALWAYS use ["job_search","cv_tailor","hr_finder","email_review"] (full pipeline).
+This includes: "apply for X jobs in Y", "find X roles in Y", "get me Y positions in Z",
+"I want to apply for [role]", "help me find [role] jobs", "apply in [country/city]", etc.
 
-CONVERSATION HISTORY:
+RULE B: If a FULL JOB DESCRIPTION (multiple lines / paragraphs) is pasted AND user says "apply"
+→ ["cv_tailor","hr_finder","email_review"]
+
+RULE C: If an HR email address is visible in the message AND user says "write email"/"send application"
+→ ["email_review"]
+
+RULE D: "find HR email for X company" → ["hr_finder"]
+RULE E: "find HR for X AND send email" → ["hr_finder","email_review"]
+RULE F: "interview prep"/"prepare for interview"/"mock interview" → ["interview_prep"]
+RULE G: "tailor my CV for [job]" → ["cv_tailor"]
+RULE H: "improve/fix/rewrite my CV" (no specific job) → ["cv_general"]
+RULE I: "my applications"/"pipeline status"/"what have you done" → ["status"]
+RULE J: General career questions → ["general"]
+RULE K: Use ["clarify"] ONLY if the message is completely meaningless (e.g. random characters,
+a single greeting like "hello", or truly impossible to determine any intent even with history).
+NEVER use clarify when: a role, company, location, or any job-related word is present.
+
+IMPORTANT: When the current message is short (1-5 words) or a follow-up like "any", "all",
+"yes", "proceed", "whatever" — look at the CONVERSATION HISTORY to determine what pipeline
+to continue. If prior messages discussed job search → run full pipeline.
+
+Return ONLY a JSON array. No explanation. No markdown.
+
+CONVERSATION HISTORY (last 20 messages):
 {history_block}
 
-USER MESSAGE: "{message}"
+CURRENT USER MESSAGE: "{message}"
 
 JSON array:"""
 
@@ -3032,6 +3060,12 @@ JSON array:"""
                 return agents
     except Exception as exc:
         logger.warning("plan_agents_failed", error=str(exc))
+
+    # Fallback: if any job-related word present → run full pipeline
+    job_words = {"job", "jobs", "role", "roles", "position", "apply", "engineer",
+                 "developer", "manager", "analyst", "designer", "work", "career"}
+    if any(w in message.lower().split() for w in job_words):
+        return ["job_search", "cv_tailor", "hr_finder", "email_review"]
 
     return ["general"]
 
