@@ -508,6 +508,26 @@ const SLASH_COMMANDS: SlashCommand[] = [
     pipeline: "cv_analysis",
     hint: "Ask anything about your CV, or just press Enter for a full analysis…",
   },
+  {
+    name: "email",
+    label: "Write & send email",
+    description: "Write a professional application email and send it to an HR contact with your CV attached",
+    icon: Mail,
+    action: "fill",
+    template: "",
+    pipeline: "email",
+    hint: "HR email address + job description (or paste JD and I'll ask for the email)…",
+  },
+  {
+    name: "cover-letter",
+    label: "Write cover letter",
+    description: "Generate a tailored cover letter from a job description and your CV",
+    icon: FileText,
+    action: "fill",
+    template: "",
+    pipeline: "cover_letter",
+    hint: "Paste the job description here (optionally attach your CV via 📎)…",
+  },
 ];
 
 interface CenterPanelProps {

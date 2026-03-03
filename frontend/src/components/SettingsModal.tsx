@@ -36,7 +36,6 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   // Confirmation modals
   const [cvDeleteTarget, setCvDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [showAccountDeleteModal, setShowAccountDeleteModal] = useState(false);
-  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -116,21 +115,12 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const handleCVDelete = async () => {
     if (!cvDeleteTarget) return;
     await deleteCV(cvDeleteTarget.id);
-    await fetchCVs();
-    setCvDeleteTarget(null);
+    await fetchCVs(); // refresh list while success state is showing
   };
 
   const handleDeleteAccount = async () => {
-    setDeletingAccount(true);
-    try {
-      await deleteAccount();
-      logout();
-      onOpenChange(false);
-    } catch (err: any) {
-      console.error("Account deletion failed:", err);
-    } finally {
-      setDeletingAccount(false);
-    }
+    await deleteAccount();
+    // onSuccess on the modal will call logout() after the green signal
   };
 
   const handleSetPrimary = async (id: string) => {
@@ -631,9 +621,11 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         open={!!cvDeleteTarget}
         onOpenChange={(v) => { if (!v) setCvDeleteTarget(null); }}
         onConfirm={handleCVDelete}
+        onSuccess={() => setCvDeleteTarget(null)}
         title="Delete CV"
         description={`"${cvDeleteTarget?.name ?? ""}" and all its tailored versions and generated PDFs will be permanently deleted. This cannot be undone.`}
         confirmLabel="Delete CV"
+        successMessage="CV deleted successfully"
       />
 
       {/* Account delete confirmation */}
@@ -641,12 +633,13 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         open={showAccountDeleteModal}
         onOpenChange={setShowAccountDeleteModal}
         onConfirm={handleDeleteAccount}
+        onSuccess={() => { logout(); onOpenChange(false); }}
         title="Delete your account"
         description="This will permanently delete your account, all uploaded CVs, job applications, tailored documents, and every other piece of data associated with your profile. There is no way to recover it."
         confirmText="DELETE"
         confirmPlaceholder="Type DELETE to confirm"
         confirmLabel="Delete my account"
-        loading={deletingAccount}
+        successMessage="Account deleted. Goodbye!"
       />
     </Dialog>
   );

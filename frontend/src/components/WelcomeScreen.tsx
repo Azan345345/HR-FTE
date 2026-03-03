@@ -12,7 +12,7 @@ interface WelcomeScreenProps {
 }
 
 export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
-  const [email, setEmail] = useState("azanmian123123@gmail.com");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLogin, setIsLogin] = useState(true);
   const [view, setView] = useState<"auth" | "forgot" | "forgot_sent">("auth");

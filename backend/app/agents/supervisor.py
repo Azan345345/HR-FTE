@@ -105,6 +105,10 @@ async def process_chat_message(
                 result = await _handle_auto_pipeline(user_id, _strip_file_block(message), db, session_id=session_id)
             elif pipeline == "cv_analysis":
                 result = await _handle_cv_general_request(user_id, _strip_file_block(message), history, db)
+            elif pipeline == "email":
+                result = await _handle_email_compose_send(user_id, message, history, db)
+            elif pipeline == "cover_letter":
+                result = await _handle_cover_letter(user_id, message, history, db)
             else:
                 llm = get_llm(task="supervisor_routing")
                 text = await _general_response(llm, _strip_file_block(message), history, user_id=user_id, db=db)
@@ -2745,3 +2749,376 @@ You draw on the user's real profile data when it's available and relevant."""
         except Exception as e2:
             logger.error("general_llm_plain_failed", error=str(e2))
             return "I'm CareerAgent, your career assistant. Ask me anything about jobs, CVs, interviews, or career strategy."
+
+
+# ── /email handler ────────────────────────────────────────────────────────────
+
+async def _handle_email_compose_send(
+    user_id: str,
+    message: str,
+    history: list,
+    db: AsyncSession,
+) -> Tuple[str, Optional[dict]]:
+    """Write a professional application email (with CV attached) and send it via Gmail.
+
+    Flow:
+      1. Parse HR email from message (regex).
+      2. Parse job description from message + conversation history.
+      3. If JD still missing → ask user for it.
+      4. Load user's primary CV.
+      5. Compose email with LLM (AIDA framework).
+      6. If Gmail is connected → send; otherwise return the draft for copy-paste.
+    """
+    import re as _re
+    from sqlalchemy import select
+    from app.db.models import UserCV, UserIntegration
+    from app.agents.email_sender import compose_application_email, send_via_gmail
+    from app.config import settings as app_settings
+
+    # ── 1. Strip attached file block + extract plain text ────────────────────
+    attached_content: Optional[str] = None
+    clean_msg = message
+    if "[ATTACHED FILE:" in message:
+        parts = message.split("[ATTACHED FILE:", 1)
+        clean_msg = parts[0].strip()
+        block = parts[1].strip()
+        if block and block.endswith("]"):
+            block = block[:-1]
+        lines = block.splitlines()
+        if lines and lines[0].endswith("]"):
+            attached_content = "\n".join(lines[1:]).strip()
+        else:
+            attached_content = block
+
+    # ── 2. Extract HR email ───────────────────────────────────────────────────
+    email_pattern = _re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+    hr_email_match = email_pattern.search(clean_msg)
+    hr_email: Optional[str] = hr_email_match.group() if hr_email_match else None
+
+    # Also search history for an HR email if not in current message
+    if not hr_email:
+        for h in reversed(history):
+            m = email_pattern.search(h.get("content", ""))
+            if m:
+                hr_email = m.group()
+                break
+
+    # ── 3. Extract job description ────────────────────────────────────────────
+    # Remove the email address from the message so we don't treat it as JD
+    jd_candidate = _re.sub(email_pattern, "", clean_msg).strip()
+
+    # Also scan attached content and history for JD material
+    jd_parts: list[str] = []
+    if len(jd_candidate) > 50:
+        jd_parts.append(jd_candidate)
+    if attached_content and len(attached_content) > 50:
+        jd_parts.append(attached_content)
+    if not jd_parts:
+        for h in reversed(history[-10:]):
+            c = h.get("content", "")
+            if h.get("role") == "user" and len(c) > 80:
+                jd_parts.append(c)
+                break
+
+    job_description = "\n\n".join(jd_parts).strip()
+
+    if not job_description:
+        return (
+            "I need the **job description** to write a targeted email.\n\n"
+            "Please paste the full job description (from the job posting) in your next message and I'll compose the email right away.",
+            None,
+        )
+
+    # Also ask for HR email if still missing
+    if not hr_email:
+        return (
+            "I have the job description — great!\n\n"
+            "Now I need the **HR contact's email address**. Please share it and I'll write and send the email.",
+            None,
+        )
+
+    # ── 4. Load user's primary CV ─────────────────────────────────────────────
+    cv_row = await db.execute(
+        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    )
+    primary_cv = cv_row.scalar_one_or_none()
+    if not primary_cv:
+        cv_row = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id).order_by(UserCV.created_at.desc()).limit(1)
+        )
+        primary_cv = cv_row.scalar_one_or_none()
+
+    cv_data: dict = primary_cv.parsed_data or {} if primary_cv else {}
+    candidate_name = cv_data.get("personal_info", {}).get("name", "the candidate")
+
+    # ── 5. Extract title + company from JD ───────────────────────────────────
+    llm = get_llm(task="email_composition")
+    extract_prompt = f"""Extract job title and company name from this job description.
+Return ONLY JSON: {{"title": "...", "company": "..."}}
+If company is not mentioned set it to "Unknown Company".
+Job Description: \"\"\"{job_description[:800]}\"\"\""""
+    try:
+        resp = await llm.ainvoke(extract_prompt)
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        m = _re.search(r'\{[^{}]+\}', content, _re.DOTALL)
+        meta = json.loads(m.group()) if m else {}
+    except Exception:
+        meta = {}
+
+    job_title = (meta.get("title") or "the position").strip()
+    company = (meta.get("company") or "the company").strip()
+
+    # ── 6. Compose email ──────────────────────────────────────────────────────
+    await event_bus.emit_agent_started(user_id, "email_composer", f"Writing email for {job_title} at {company}")
+
+    job_data = {"title": job_title, "company": company, "description": job_description}
+    hr_contact = {"hr_name": "Hiring Manager", "email": hr_email}
+
+    # Get LinkedIn URL from user profile
+    from app.db.models import User as _User
+    user_row = await db.execute(select(_User).where(_User.id == user_id))
+    user_obj = user_row.scalar_one_or_none()
+    linkedin_url = (user_obj.preferences or {}).get("linkedin_url") if user_obj else None
+
+    email_result = await compose_application_email(
+        job_data=job_data,
+        cv_data=cv_data,
+        hr_contact=hr_contact,
+        linkedin_url=linkedin_url,
+    )
+    subject = email_result.get("email_subject", f"Application for {job_title} – {candidate_name}")
+    body = email_result.get("email_body", "")
+
+    # ── 7. Load Gmail tokens ──────────────────────────────────────────────────
+    int_result = await db.execute(
+        select(UserIntegration).where(
+            UserIntegration.user_id == user_id,
+            UserIntegration.service_name.in_(["google", "gmail"]),
+            UserIntegration.is_active == True,
+        )
+    )
+    integration = int_result.scalar_one_or_none()
+    gmail_tokens: dict = {}
+    if integration:
+        gmail_tokens = {
+            "access_token": integration.access_token,
+            "refresh_token": integration.refresh_token,
+            "client_id": app_settings.GOOGLE_OAUTH_CLIENT_ID,
+            "client_secret": app_settings.GOOGLE_OAUTH_CLIENT_SECRET,
+        }
+    elif app_settings.GOOGLE_REFRESH_TOKEN:
+        gmail_tokens = {
+            "access_token": None,
+            "refresh_token": app_settings.GOOGLE_REFRESH_TOKEN,
+            "client_id": app_settings.GOOGLE_OAUTH_CLIENT_ID,
+            "client_secret": app_settings.GOOGLE_OAUTH_CLIENT_SECRET,
+        }
+
+    # ── 8. Attach CV PDF if available ────────────────────────────────────────
+    pdf_bytes: Optional[bytes] = None
+    pdf_filename = f"{candidate_name.replace(' ', '_')}_CV.pdf"
+    if primary_cv and primary_cv.parsed_data:
+        try:
+            from app.agents.doc_generator import generate_cv_pdf
+            pdf_bytes = await generate_cv_pdf(primary_cv.parsed_data)
+        except Exception as _pdf_err:
+            logger.warning("email_handler_pdf_failed", error=str(_pdf_err))
+
+    # ── 9. Send or return draft ───────────────────────────────────────────────
+    if gmail_tokens:
+        await event_bus.emit_agent_started(user_id, "email_sender", f"Sending email to {hr_email}")
+        send_result = await send_via_gmail(
+            user_tokens=gmail_tokens,
+            to_email=hr_email,
+            subject=subject,
+            body=body,
+            attachment_bytes=pdf_bytes,
+            attachment_filename=pdf_filename,
+        )
+        if send_result.get("status") == "sent":
+            return (
+                f"✅ **Email sent successfully** to `{hr_email}`!\n\n"
+                f"**Subject:** {subject}\n\n"
+                f"---\n\n{body}\n\n"
+                + (f"📎 *Your CV ({pdf_filename}) was attached.*" if pdf_bytes else ""),
+                None,
+            )
+        else:
+            err = send_result.get("error", "Unknown error")
+            error_code = send_result.get("error_code", "")
+            if error_code == "token_revoked":
+                return (
+                    f"⚠️ **Gmail token expired.** Please reconnect Gmail in **Settings → Integrations**.\n\n"
+                    f"Here is your email draft instead:\n\n"
+                    f"**To:** {hr_email}\n**Subject:** {subject}\n\n---\n\n{body}",
+                    None,
+                )
+            return (
+                f"⚠️ **Email could not be sent** ({err}).\n\n"
+                f"Here is your draft — copy and send it manually:\n\n"
+                f"**To:** {hr_email}\n**Subject:** {subject}\n\n---\n\n{body}",
+                None,
+            )
+    else:
+        # Gmail not connected — return draft for manual sending
+        return (
+            f"✉️ **Email draft ready** (Gmail not connected — connect in Settings to auto-send):\n\n"
+            f"**To:** {hr_email}\n**Subject:** {subject}\n\n---\n\n{body}\n\n"
+            f"*Connect Gmail in **Settings → Integrations** to send automatically next time.*",
+            None,
+        )
+
+
+# ── /cover-letter handler ─────────────────────────────────────────────────────
+
+async def _handle_cover_letter(
+    user_id: str,
+    message: str,
+    history: list,
+    db: AsyncSession,
+) -> Tuple[str, Optional[dict]]:
+    """Generate a tailored cover letter from a job description and the user's CV.
+
+    Flow:
+      1. Parse JD from message + [ATTACHED FILE:] block + conversation history.
+      2. If JD missing → ask for it.
+      3. Load primary CV (or use attached CV text).
+      4. Generate cover letter with LLM.
+      5. Return as formatted markdown.
+    """
+    from sqlalchemy import select
+    from app.db.models import UserCV
+
+    # ── 1. Parse attached file block ──────────────────────────────────────────
+    attached_content: Optional[str] = None
+    clean_msg = message
+    if "[ATTACHED FILE:" in message:
+        parts = message.split("[ATTACHED FILE:", 1)
+        clean_msg = parts[0].strip()
+        block = parts[1].strip()
+        lines = block.splitlines()
+        if lines and lines[0].endswith("]"):
+            attached_content = "\n".join(lines[1:]).strip()
+        else:
+            attached_content = block
+
+    # ── 2. Find job description ───────────────────────────────────────────────
+    jd_parts: list[str] = []
+    if len(clean_msg.strip()) > 50:
+        jd_parts.append(clean_msg.strip())
+    if attached_content and len(attached_content) > 50:
+        jd_parts.append(attached_content)
+
+    # Scan history if still empty
+    if not jd_parts:
+        for h in reversed(history[-10:]):
+            c = h.get("content", "")
+            if h.get("role") == "user" and len(c) > 80:
+                jd_parts.append(c)
+                break
+
+    job_description = "\n\n".join(jd_parts).strip()
+
+    if not job_description:
+        return (
+            "I need the **job description** to write a tailored cover letter.\n\n"
+            "Please paste the full job posting and I'll craft a compelling cover letter using your CV.",
+            None,
+        )
+
+    # ── 3. Load CV ────────────────────────────────────────────────────────────
+    cv_row = await db.execute(
+        select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
+    )
+    primary_cv = cv_row.scalar_one_or_none()
+    if not primary_cv:
+        cv_row = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id).order_by(UserCV.created_at.desc()).limit(1)
+        )
+        primary_cv = cv_row.scalar_one_or_none()
+
+    cv_data: dict = primary_cv.parsed_data or {} if primary_cv else {}
+    personal = cv_data.get("personal_info", {})
+    candidate_name = personal.get("name", "the candidate")
+    candidate_email = personal.get("email", "")
+    candidate_phone = personal.get("phone", "")
+    candidate_location = personal.get("location", "")
+    skills = cv_data.get("skills", {})
+    experience = cv_data.get("experience", [])
+    education = cv_data.get("education", [])
+    summary = cv_data.get("summary", "")
+
+    cv_text = f"""Name: {candidate_name}
+Email: {candidate_email}
+Phone: {candidate_phone}
+Location: {candidate_location}
+Summary: {summary[:400]}
+Technical Skills: {", ".join(skills.get("technical", [])[:15])}
+Soft Skills: {", ".join(skills.get("soft", [])[:8])}
+Experience: {json.dumps(experience[:4], indent=2)[:800]}
+Education: {json.dumps(education[:2], indent=2)[:400]}"""
+
+    # ── 4. Extract job meta ───────────────────────────────────────────────────
+    llm = get_llm(task="email_composition")
+    extract_prompt = f"""Extract job title, company name, and key requirements from this job description.
+Return ONLY JSON: {{"title": "...", "company": "...", "key_requirements": ["req1", "req2", "req3"]}}
+Job Description: \"\"\"{job_description[:800]}\"\"\""""
+    try:
+        resp = await llm.ainvoke(extract_prompt)
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        import re as _re
+        m = _re.search(r'\{[\s\S]+\}', content)
+        meta = json.loads(m.group()) if m else {}
+    except Exception:
+        meta = {}
+
+    job_title = (meta.get("title") or "the position").strip()
+    company = (meta.get("company") or "the company").strip()
+    key_reqs = meta.get("key_requirements", [])
+
+    await event_bus.emit_agent_started(user_id, "cover_letter", f"Writing cover letter for {job_title} at {company}")
+
+    # ── 5. Generate cover letter ──────────────────────────────────────────────
+    from app.core.skills import get_combined_skills
+    skills_context = get_combined_skills(["cover-letter-writing", "ats-optimization"])
+
+    cover_letter_prompt = f"""You are an elite Career Communication Specialist.
+
+{skills_context}
+
+Write a professional, compelling cover letter for the following application.
+
+RULES:
+- 3–4 short paragraphs, maximum 350 words.
+- Opening: hook with the specific role and a strong hook — no "I am writing to apply for…"
+- Body: match 2–3 of the candidate's strongest achievements to the key requirements.
+- Closing: clear CTA (interview request), confident — not desperate.
+- Use the candidate's real name in the sign-off.
+- Format with a professional header block (Name, email, phone, date) and address block (Company).
+- Write in first person as the candidate.
+- Do NOT include placeholder brackets like [Name] — use the real data provided.
+
+CANDIDATE:
+{cv_text}
+
+JOB DESCRIPTION:
+{job_description[:1500]}
+
+KEY REQUIREMENTS: {", ".join(key_reqs[:5])}
+
+Write ONLY the cover letter text — no preamble, no commentary."""
+
+    try:
+        response = await llm.ainvoke(cover_letter_prompt)
+        cover_letter = response.content if hasattr(response, "content") else str(response)
+        cover_letter = cover_letter.strip()
+    except Exception as e:
+        logger.error("cover_letter_generation_failed", error=str(e))
+        return ("I ran into an issue generating your cover letter. Please try again.", None)
+
+    return (
+        f"📄 **Cover Letter — {job_title} at {company}**\n\n"
+        f"---\n\n{cover_letter}\n\n"
+        f"---\n\n*Copy the letter above. Use `/tailor` to also get a CV tailored for this role.*",
+        None,
+    )
