@@ -242,7 +242,23 @@ Return ONLY JSON."""
         except Exception as e:
             logger.warning("jsearch_failed", error=str(e))
 
-    # 5. Cross-platform deduplication (fuzzy company+title match)
+    # 5. LLM fallback — runs only when every real API returned nothing
+    if not all_jobs:
+        logger.warning(
+            "all_job_apis_empty_using_llm_fallback",
+            query=search_title, location=search_location,
+            sources_tried=sources_tried,
+        )
+        await event_bus.emit(user_id, "jobs_stream", {
+            "phase": "source_start",
+            "source": "ai_generated",
+            "source_label": "AI-generated listings (no API keys configured)",
+        })
+        all_jobs = await _generate_sample_jobs(search_title, search_location, limit)
+        sources_tried.append("ai_generated")
+        await _emit_batch("ai_generated", "AI Generated", all_jobs)
+
+    # 6. Cross-platform deduplication (fuzzy company+title match)
     await event_bus.emit(user_id, "jobs_stream", {
         "phase": "deduplicating",
         "total": len(all_jobs),
@@ -281,9 +297,10 @@ Return ONLY JSON."""
 
     unique_jobs.sort(key=lambda j: j.get("match_score", 0), reverse=True)
 
+    sources_label = "+".join(sources_tried) if sources_tried else "no sources"
     await event_bus.emit_agent_completed(
         user_id, "job_hunter",
-        f"Found {len(unique_jobs[:limit])} unique positions across {'+'.join(sources_tried)}"
+        f"Found {len(unique_jobs[:limit])} unique positions across {sources_label}"
     )
     return unique_jobs[:limit]
 

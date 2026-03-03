@@ -1090,7 +1090,8 @@ Return ONLY valid JSON."""
         content = resp.content if hasattr(resp, "content") else str(resp)
         params = json.loads(content.strip().replace("```json", "").replace("```", ""))
     except Exception:
-        params = {"count": 5, "location": None, "query": "software engineer"}
+        # Keep the original message as query so we never lose user intent
+        params = {"count": 5, "location": None, "query": message}
 
     count = min(int(params.get("count") or 5), 8)
     location = params.get("location")
