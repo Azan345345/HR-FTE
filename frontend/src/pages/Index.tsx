@@ -38,10 +38,12 @@ const Index = () => {
     if (isAuthenticated && appState === "welcome") {
       getProfile()
         .then((profile) => {
-          if (profile.onboarding_completed) {
-            setAppState("workspace");
-          } else {
+          // Only show onboarding when explicitly set to false (new accounts).
+          // null/undefined means an existing user — send straight to workspace.
+          if (profile.onboarding_completed === false) {
             setAppState("onboarding");
+          } else {
+            setAppState("workspace");
           }
         })
         .catch(() => {
@@ -97,7 +99,7 @@ const Index = () => {
     setTimeout(() => {
       getProfile()
         .then((profile) => {
-          setAppState(profile.onboarding_completed ? "workspace" : "onboarding");
+          setAppState(profile.onboarding_completed === false ? "onboarding" : "workspace");
         })
         .catch(() => setAppState("workspace"));
     }, 1200);

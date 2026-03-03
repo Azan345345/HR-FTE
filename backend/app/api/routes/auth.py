@@ -91,6 +91,7 @@ async def signup(body: SignupRequest, db: AsyncSession = Depends(get_db)):
         name=body.name,
         email=body.email,
         password_hash=hash_password(body.password),
+        preferences={"onboarding_completed": False},
     )
     db.add(user)
     await db.commit()
