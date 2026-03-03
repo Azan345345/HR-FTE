@@ -166,6 +166,10 @@ export function forgotPassword(email: string) {
     });
 }
 
+export function deleteAccount() {
+    return api<void>("/auth/account", { method: "DELETE", token: getToken() });
+}
+
 export function resetPassword(token: string, new_password: string) {
     return api<{ message: string }>("/auth/reset-password", {
         method: "POST",

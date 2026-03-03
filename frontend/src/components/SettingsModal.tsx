@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { X, Eye, EyeOff, ShieldCheck, Database, Zap, Plus, Trash2, FileText, CheckCircle2, Star, Brain, Sparkles, BookOpen, Link, Linkedin, Mail, CheckCheck, AlertCircle, RefreshCw } from "lucide-react";
-import { getSettingsConfig, listCVs, uploadCV, deleteCV, setPrimaryCV, getSkills, getGoogleAuthUrl, getProfile, saveProfile, getIntegrationStatus, disconnectGoogle } from "@/services/api";
+import { getSettingsConfig, listCVs, uploadCV, deleteCV, setPrimaryCV, getSkills, getGoogleAuthUrl, getProfile, saveProfile, getIntegrationStatus, disconnectGoogle, deleteAccount } from "@/services/api";
 import { useAuthStore } from "@/hooks/useAuth";
+import { ConfirmModal } from "@/components/ConfirmModal";
 
 interface SettingsModalProps {
   open: boolean;
@@ -17,7 +18,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { user } = useAuthStore();
+  const { user, logout } = useAuthStore();
   const [cvs, setCvs] = useState<any[]>([]);
   const [cvLoading, setCvLoading] = useState(false);
   const [uploadingCv, setUploadingCv] = useState(false);
@@ -31,6 +32,11 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [linkedinUrl, setLinkedinUrl] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+
+  // Confirmation modals
+  const [cvDeleteTarget, setCvDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [showAccountDeleteModal, setShowAccountDeleteModal] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -107,14 +113,23 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     }
   };
 
-  const handleCVDelete = async (id: string) => {
-    if (!confirm("Delete this CV? This will also remove all tailored versions and generated PDFs linked to it.")) return;
+  const handleCVDelete = async () => {
+    if (!cvDeleteTarget) return;
+    await deleteCV(cvDeleteTarget.id);
+    await fetchCVs();
+    setCvDeleteTarget(null);
+  };
+
+  const handleDeleteAccount = async () => {
+    setDeletingAccount(true);
     try {
-      await deleteCV(id);
-      await fetchCVs();
+      await deleteAccount();
+      logout();
+      onOpenChange(false);
     } catch (err: any) {
-      console.error("Delete failed:", err);
-      alert(`Failed to delete CV: ${err?.message || "Unknown error"}`);
+      console.error("Account deletion failed:", err);
+    } finally {
+      setDeletingAccount(false);
     }
   };
 
@@ -167,7 +182,6 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   };
 
   const handleDisconnectGmail = async () => {
-    if (!confirm("Disconnect Gmail? The app will no longer be able to send emails or monitor your inbox for HR replies.")) return;
     setDisconnectingGmail(true);
     try {
       await disconnectGoogle();
@@ -278,6 +292,26 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                       >
                         {savingProfile ? "Saving..." : profileSaved ? "✓ Saved" : "Save Changes"}
                       </button>
+                    </div>
+
+                    {/* Danger Zone */}
+                    <div className="mt-6 pt-5 border-t border-red-100">
+                      <p className="text-[11px] font-bold text-red-400 uppercase tracking-widest mb-3">Danger Zone</p>
+                      <div className="flex items-center justify-between p-4 rounded-xl border border-red-100 bg-red-50/50">
+                        <div>
+                          <p className="text-[13px] font-semibold text-slate-800 font-sans">Delete account</p>
+                          <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+                            Permanently removes your account and all data. Cannot be undone.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setShowAccountDeleteModal(true)}
+                          className="ml-4 flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-semibold text-red-600 border border-red-200 bg-white hover:bg-red-50 hover:border-red-300 transition-all active:scale-[0.97]"
+                        >
+                          <Trash2 size={13} />
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -464,7 +498,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                                   </button>
                                 )}
                                 <button
-                                  onClick={() => handleCVDelete(cv.id)}
+                                  onClick={() => setCvDeleteTarget({ id: cv.id, name: cv.file_name })}
                                   className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
                                   title="Delete CV permanently"
                                 >
@@ -592,6 +626,28 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
           </div>
         </div>
       </DialogContent>
+      {/* CV delete confirmation */}
+      <ConfirmModal
+        open={!!cvDeleteTarget}
+        onOpenChange={(v) => { if (!v) setCvDeleteTarget(null); }}
+        onConfirm={handleCVDelete}
+        title="Delete CV"
+        description={`"${cvDeleteTarget?.name ?? ""}" and all its tailored versions and generated PDFs will be permanently deleted. This cannot be undone.`}
+        confirmLabel="Delete CV"
+      />
+
+      {/* Account delete confirmation */}
+      <ConfirmModal
+        open={showAccountDeleteModal}
+        onOpenChange={setShowAccountDeleteModal}
+        onConfirm={handleDeleteAccount}
+        title="Delete your account"
+        description="This will permanently delete your account, all uploaded CVs, job applications, tailored documents, and every other piece of data associated with your profile. There is no way to recover it."
+        confirmText="DELETE"
+        confirmPlaceholder="Type DELETE to confirm"
+        confirmLabel="Delete my account"
+        loading={deletingAccount}
+      />
     </Dialog>
   );
 }

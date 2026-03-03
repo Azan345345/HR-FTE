@@ -186,3 +186,15 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
     redis_client.delete(f"pwd_reset:{body.token}")
     logger.info("password_reset_success", user_id=user.id)
     return {"message": "Password reset successfully. You can now sign in."}
+
+
+@router.delete("/account", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete the authenticated user's account and all associated data."""
+    await db.delete(current_user)
+    await db.commit()
+    logger.info("account_deleted", user_id=current_user.id)
+    return None
