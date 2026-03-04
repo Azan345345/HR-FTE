@@ -17,6 +17,11 @@ from app.schemas.schemas import (
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
+# In-memory set of session IDs that were stopped mid-request.
+# When /chat/stop is called, the session is added here so that the
+# still-running /chat/send handler knows to skip saving its response.
+_stopped_sessions: set[str] = set()
+
 
 @router.post("/send", response_model=ChatMessageResponse)
 async def send_message(
@@ -71,6 +76,19 @@ async def send_message(
             response_text = result
     except Exception as e:
         response_text = f"I'm sorry, I encountered an error: {str(e)}. Please try again."
+
+    # If the user switched away while we were processing, don't save the response —
+    # a "Stopped" message was already persisted by /chat/stop.
+    if session_id in _stopped_sessions:
+        _stopped_sessions.discard(session_id)
+        return ChatMessageResponse(
+            id="",
+            role="assistant",
+            agent_name="supervisor",
+            content=response_text,
+            metadata=response_metadata,
+            created_at=None,
+        )
 
     # C7 fix: Retry message persistence up to 3 times with backoff to prevent silent loss
     from app.db.database import AsyncSessionLocal
@@ -271,6 +289,10 @@ async def stop_conversation(
         raise HTTPException(status_code=400, detail="session_id is required")
 
     user_id = str(current_user.id)
+
+    # Mark session as stopped so the still-running /chat/send skips its save
+    _stopped_sessions.add(session_id)
+
     try:
         stopped_msg = ChatMessage(
             user_id=user_id,
