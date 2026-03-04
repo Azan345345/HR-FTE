@@ -722,7 +722,7 @@ async def _search_jsearch(
         jobs.append({
             "title": item.get("job_title", ""),
             "company": company,
-            "location": f"{item.get('job_city','')} {item.get('job_state','')}".strip(),
+            "location": " ".join(filter(None, [item.get('job_city'), item.get('job_state')])).strip(),
             "description": item.get("job_description", ""),
             "source": item.get("job_publisher", "jsearch"),
             "application_url": item.get("job_apply_link", ""),

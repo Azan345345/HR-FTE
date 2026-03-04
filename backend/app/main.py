@@ -44,6 +44,22 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass  # Column already exists — safe to ignore
 
+    # ── Step 2b: Widen narrow VARCHAR columns so long values don't crash inserts.
+    if is_postgres:
+        widen_cols = [
+            ("jobs", "source", "VARCHAR(255)"),
+            ("jobs", "job_type", "VARCHAR(255)"),
+            ("jobs", "posted_date", "VARCHAR(255)"),
+        ]
+        for table, column, new_type in widen_cols:
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text(
+                        f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {new_type}"
+                    ))
+            except Exception:
+                pass  # Already the right type or table doesn't exist
+
     # ── Step 3: make tailored_cvs.job_id nullable (general CV improvements
     #    have no associated job).  Runs in its own transaction so it is never
     #    affected by the "column already exists" failures above.

@@ -872,20 +872,20 @@ Return ONLY valid JSON."""
         await fresh_db.flush()
         search_id = job_search.id
 
-        # Save Job records
+        # Save Job records — truncate string fields to fit DB column limits
         for job_data in jobs:
             job_record = Job(
                 search_id=job_search.id,
-                title=job_data.get("title", ""),
-                company=job_data.get("company", ""),
-                location=job_data.get("location"),
-                salary_range=job_data.get("salary_range"),
-                job_type=_ensure_str(job_data.get("job_type")),
+                title=(job_data.get("title", "") or "")[:250],
+                company=(job_data.get("company", "") or "")[:250],
+                location=(job_data.get("location") or "")[:250] or None,
+                salary_range=(job_data.get("salary_range") or "")[:100] or None,
+                job_type=(_ensure_str(job_data.get("job_type")) or "")[:50] or None,
                 description=job_data.get("description", ""),
                 requirements=job_data.get("requirements", []),
                 application_url=job_data.get("application_url"),
-                posted_date=job_data.get("posted_date"),
-                source=job_data.get("source", "ai_generated"),
+                posted_date=(job_data.get("posted_date") or "")[:50] or None,
+                source=(job_data.get("source", "ai_generated") or "unknown")[:50],
                 company_domain=job_data.get("company_domain") or None,
                 match_score=job_data.get("match_score"),
                 matching_skills=job_data.get("matching_skills", []),
