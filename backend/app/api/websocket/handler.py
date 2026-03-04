@@ -12,6 +12,8 @@ async def websocket_endpoint(websocket: WebSocket):
     """Handle WebSocket connections. Clients send a JWT token to authenticate."""
     # Accept first, then authenticate via message
     await websocket.accept()
+    # H13 fix: Initialize user_id before try block to prevent NameError in except
+    user_id = None
 
     try:
         # Wait for auth message

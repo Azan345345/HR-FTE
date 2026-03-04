@@ -26,9 +26,13 @@ interface Props {
 }
 
 export function ApplicationSentCard({ metadata, onSendAction }: Props) {
-  const {
-    job, hr_email, mock_send, next_steps = [], interview_prep_available, next_job_suggestion,
-  } = metadata;
+  // C5 fix: Null guards for metadata fields
+  const job = metadata?.job ?? { title: "Unknown", company: "Unknown" };
+  const hr_email = metadata?.hr_email ?? "";
+  const mock_send = metadata?.mock_send ?? false;
+  const next_steps = metadata?.next_steps ?? [];
+  const interview_prep_available = metadata?.interview_prep_available ?? false;
+  const next_job_suggestion = metadata?.next_job_suggestion;
 
   return (
     <motion.div

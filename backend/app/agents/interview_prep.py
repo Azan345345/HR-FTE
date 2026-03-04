@@ -45,10 +45,11 @@ async def _call_llm(llm, prompt: str, label: str) -> dict:
         return _extract_json(content)
     except asyncio.TimeoutError:
         logger.error("interview_prep_timeout", label=label, timeout=_LLM_TIMEOUT)
-        return {}
+        # M10 fix: Return empty arrays for expected keys instead of {} to prevent caller crashes
+        return {"technical_questions": [], "behavioral_questions": [], "questions_to_ask": []}
     except Exception as e:
         logger.error("interview_prep_error", label=label, error=str(e))
-        return {}
+        return {"technical_questions": [], "behavioral_questions": [], "questions_to_ask": []}
 
 
 async def generate_interview_prep(

@@ -78,7 +78,8 @@ function HrBadge({ status }: { status: LiveHrStatus }) {
 }
 
 export function JobResultsCard({ metadata, onSendAction }: Props) {
-  const { jobs } = metadata;
+  // C5/M4 fix: Null guard — prevent crash if metadata.jobs is null/undefined
+  const jobs = metadata?.jobs ?? [];
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const { hrResults, hrSearchDone } = useAgentStore();
 
@@ -90,7 +91,10 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
     });
 
   const getLiveHrStatus = (job: Job): LiveHrStatus => {
-    const key = `${job.company}|${job.title}`;
+    // M4 fix: Sanitize pipe chars in company/title to prevent key corruption
+    const safeCompany = (job.company || "").replace(/\|/g, "");
+    const safeTitle = (job.title || "").replace(/\|/g, "");
+    const key = `${safeCompany}|${safeTitle}`;
     const result = hrResults[key];
     if (result) return result.status;
     // Not received a ws event yet

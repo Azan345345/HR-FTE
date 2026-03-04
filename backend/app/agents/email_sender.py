@@ -110,6 +110,13 @@ async def send_via_gmail(
     Returns:
         Dict with message_id and status.
     """
+    # L6 fix: Validate email format before attempting send
+    import re as _re
+    if not to_email or not _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', to_email.strip()):
+        logger.warning("invalid_email_format", to_email=to_email)
+        return {"message_id": None, "status": "failed",
+                "error": f"Invalid email address: '{to_email}'"}
+
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
@@ -175,7 +182,8 @@ async def send_via_gmail(
         # Build email message — prefer in-memory bytes, fall back to file path
         msg = MIMEMultipart()
         msg.attach(MIMEText(body, "plain"))
-        if attachment_bytes:
+        # M11 fix: Only attach if bytes are non-empty, otherwise fall back to file path
+        if attachment_bytes and len(attachment_bytes) > 0:
             part = MIMEApplication(attachment_bytes, _subtype="pdf")
             part.add_header("Content-Disposition", "attachment", filename=attachment_filename)
             msg.attach(part)

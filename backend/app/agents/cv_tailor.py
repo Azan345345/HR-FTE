@@ -789,9 +789,12 @@ Return ONLY valid JSON (no markdown fences). Include skills_to_remove and non_cv
 }}"""
 
     # Primary: OpenAI function calling — BowJob CVImprovementEngine style
-    analysis = await _openai_tailor_cv(cv_for_prompt, job_data, skills_trimmed, fake_exp_count)
-    if analysis is not None:
-        return _build_tailor_result(parsed_cv, analysis, job_data, fake_exp_count)
+    try:
+        analysis = await _openai_tailor_cv(cv_for_prompt, job_data, skills_trimmed, fake_exp_count)
+        if analysis is not None:
+            return _build_tailor_result(parsed_cv, analysis, job_data, fake_exp_count)
+    except Exception as e:
+        logger.warning("openai_tailor_failed", error=str(e))
 
     # Fallback: LangChain LLM with prompt-based JSON extraction
     logger.info("bowjob_tailor_fallback_to_langchain")
@@ -807,6 +810,11 @@ Return ONLY valid JSON (no markdown fences). Include skills_to_remove and non_cv
 
         analysis = json.loads(content)
         return _build_tailor_result(parsed_cv, analysis, job_data, fake_exp_count)
+
+    except RuntimeError as e:
+        # H11 fix: All LLM providers exhausted — return user-friendly error instead of 500
+        logger.error("cv_tailor_all_llms_failed", error=str(e))
+        return _fallback_result(parsed_cv, "All AI services are temporarily unavailable. Please try again in a few minutes.")
 
     except Exception as e:
         logger.error("cv_tailor_error", error=str(e), exc_info=True)

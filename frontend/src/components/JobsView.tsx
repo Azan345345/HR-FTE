@@ -53,6 +53,12 @@ export function JobsView({ onNavigateToInterview }: JobsViewProps) {
   };
 
   useEffect(() => { fetchData(); }, []);
+  // M7 fix: Refresh data when user switches to this tab (window focus)
+  useEffect(() => {
+    const onFocus = () => fetchData();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages]);
 
   // "Actually applied" = email sent or manually marked applied, interview, rejected

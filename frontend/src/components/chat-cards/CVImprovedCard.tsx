@@ -17,7 +17,9 @@ interface Props {
 }
 
 export function CVImprovedCard({ metadata, onSendAction }: Props) {
-  const { tailored_cv_id, name } = metadata;
+  // C5 fix: Null guards
+  const tailored_cv_id = metadata?.tailored_cv_id ?? "";
+  const name = metadata?.name;
 
   const handleDownload = async () => {
     const token = useAuthStore.getState().token;
@@ -27,6 +29,13 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
+        // L12 fix: Handle 401 with redirect instead of stale token error
+        if (res.status === 401) {
+          localStorage.removeItem("token");
+          localStorage.removeItem("user");
+          window.location.href = "/login";
+          return;
+        }
         const errBody = await res.json().catch(() => null);
         const detail = errBody?.detail || `Server error ${res.status}`;
         throw new Error(detail);

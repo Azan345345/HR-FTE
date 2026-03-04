@@ -217,7 +217,8 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     jobStreamHRStatus: (company, title, status, email) =>
         set((state) => {
             if (!state.jobStream) return state;
-            const key = `${company}|${title}`;
+            // M4 fix: Sanitize pipe chars in key components
+            const key = `${(company || "").replace(/\|/g, "")}|${(title || "").replace(/\|/g, "")}`;
             return {
                 jobStream: {
                     ...state.jobStream,
@@ -234,7 +235,8 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
 
     setHrResult: (company, title, status, email) =>
         set((state) => {
-            const key = `${company}|${title}`;
+            // M4 fix: Sanitize pipe chars in key components
+            const key = `${(company || "").replace(/\|/g, "")}|${(title || "").replace(/\|/g, "")}`;
             return {
                 hrResults: { ...state.hrResults, [key]: { status, email } },
             };

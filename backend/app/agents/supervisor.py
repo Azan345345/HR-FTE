@@ -78,6 +78,12 @@ async def process_chat_message(
     Returns:
         (response_text, metadata) where metadata drives rich UI card rendering.
     """
+    # M18 fix: Generate correlation ID for tracing this entire request across agents
+    import uuid as _uuid
+    correlation_id = str(_uuid.uuid4())[:8]
+    logger.info("chat_request_start", correlation_id=correlation_id,
+                user_id=user_id, session_id=session_id, message=message[:80])
+
     await event_bus.emit_agent_started(user_id, "supervisor", "Analyzing your request")
 
     result: Tuple[str, Optional[dict]] = ("", None)
@@ -240,6 +246,8 @@ async def process_chat_message(
         return result
 
     ms = int((time.monotonic() - _t0) * 1000)
+    logger.info("chat_request_complete", correlation_id=correlation_id,
+                duration_ms=ms, response_len=len(result[0]))
     await _log_execution(db, user_id, session_id, "supervisor", "process_message", "success", ms)
     await event_bus.emit_agent_completed(user_id, "supervisor", result[0][:100])
     return result
@@ -961,10 +969,11 @@ Return ONLY valid JSON."""
 # ── Background HR Lookup ──────────────────────────────────────────────────────
 
 async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
-    """Background task: find HR contacts sequentially and update DB + emit WS events.
+    """Background task: find HR contacts in PARALLEL and update DB + emit WS events.
 
-    Runs AFTER the job-search HTTP response is already sent to the client so it
-    never blocks the request.  Results stream to the frontend via hr_stream events.
+    All company lookups fire simultaneously (with a concurrency semaphore to
+    avoid hammering external APIs). Results stream to the frontend via
+    hr_stream WebSocket events as each one completes.
     """
     from app.agents.hr_finder import find_hr_contact
     from app.db.database import AsyncSessionLocal
@@ -975,88 +984,101 @@ async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
 
     await event_bus.emit_agent_started(
         user_id, "hr_finder",
-        f"Searching HR contacts for {len(job_entries)} companies…"
+        f"Searching HR contacts for {len(job_entries)} companies in parallel…"
     )
 
-    found_count = 0
+    # Emit "searching" for ALL companies up-front so the UI shows spinners
     for entry in job_entries:
+        await event_bus.emit(user_id, "hr_stream", {
+            "phase": "searching",
+            "company": entry["company"],
+            "job_title": entry["title"],
+        })
+
+    found_count = 0
+    # Semaphore limits concurrency to avoid rate-limit issues with Hunter/APIs
+    sem = asyncio.Semaphore(5)
+
+    async def _lookup_one(entry: dict) -> bool:
+        """Lookup a single company's HR contact. Returns True if found."""
+        nonlocal found_count
         job_id = entry["job_id"]
         company = entry["company"]
         title = entry["title"]
         domain = entry.get("company_domain") or ""
 
-        await event_bus.emit(user_id, "hr_stream", {
-            "phase": "searching",
-            "company": company,
-            "job_title": title,
-        })
+        async with sem:
+            try:
+                result = await asyncio.wait_for(
+                    find_hr_contact(
+                        company=company,
+                        job_title=title,
+                        company_domain=domain or None,
+                        user_id=user_id,
+                    ),
+                    timeout=45,
+                )
 
-        try:
-            result = await asyncio.wait_for(
-                find_hr_contact(
-                    company=company,
-                    job_title=title,
-                    company_domain=domain or None,
-                    user_id=user_id,
-                ),
-                timeout=45,  # 45s per company — allows Hunter + SerpAPI + scraper
-            )
-
-            if result.get("hr_email"):
-                found_count += 1
-                async with AsyncSessionLocal() as db:
-                    db.add(_HRContact(
-                        job_id=job_id,
-                        hr_name=result.get("hr_name"),
-                        hr_email=result.get("hr_email"),
-                        hr_title=result.get("hr_title"),
-                        hr_linkedin=result.get("hr_linkedin") or "",
-                        confidence_score=result.get("confidence_score"),
-                        source=result.get("source"),
-                        verified=result.get("verified", False),
-                    ))
-                    # Persist Hunter-resolved domain so future lookups skip guessing
-                    hunter_domain = result.get("resolved_domain")
-                    if hunter_domain:
-                        from app.db.models import Job as _Job
-                        job_row = await db.get(_Job, job_id)
-                        if job_row and not job_row.company_domain:
-                            job_row.company_domain = hunter_domain
-                    await db.commit()
-                await event_bus.emit(user_id, "hr_stream", {
-                    "phase": "found",
-                    "company": company,
-                    "job_title": title,
-                    "email": result.get("hr_email"),
-                    "total_found": len(result.get("all_recipients", [])),
-                })
-            else:
+                if result.get("hr_email"):
+                    found_count += 1
+                    async with AsyncSessionLocal() as db:
+                        db.add(_HRContact(
+                            job_id=job_id,
+                            hr_name=result.get("hr_name"),
+                            hr_email=result.get("hr_email"),
+                            hr_title=result.get("hr_title"),
+                            hr_linkedin=result.get("hr_linkedin") or "",
+                            confidence_score=result.get("confidence_score"),
+                            source=result.get("source"),
+                            verified=result.get("verified", False),
+                        ))
+                        hunter_domain = result.get("resolved_domain")
+                        if hunter_domain:
+                            from app.db.models import Job as _Job
+                            job_row = await db.get(_Job, job_id)
+                            if job_row and not job_row.company_domain:
+                                job_row.company_domain = hunter_domain
+                        await db.commit()
+                    await event_bus.emit(user_id, "hr_stream", {
+                        "phase": "found",
+                        "company": company,
+                        "job_title": title,
+                        "email": result.get("hr_email"),
+                        "total_found": len(result.get("all_recipients", [])),
+                    })
+                    return True
+                else:
+                    await event_bus.emit(user_id, "hr_stream", {
+                        "phase": "not_found",
+                        "company": company,
+                        "job_title": title,
+                    })
+                    return False
+            except asyncio.TimeoutError:
+                logger.warning("bg_hr_lookup_timeout", company=company)
                 await event_bus.emit(user_id, "hr_stream", {
                     "phase": "not_found",
                     "company": company,
                     "job_title": title,
                 })
-        except asyncio.TimeoutError:
-            logger.warning("bg_hr_lookup_timeout", company=company)
-            await event_bus.emit(user_id, "hr_stream", {
-                "phase": "not_found",
-                "company": company,
-                "job_title": title,
-            })
-        except Exception as e:
-            logger.warning("bg_hr_lookup_error", company=company, error=str(e))
-            await event_bus.emit(user_id, "hr_stream", {
-                "phase": "not_found",
-                "company": company,
-                "job_title": title,
-            })
+                return False
+            except Exception as e:
+                logger.warning("bg_hr_lookup_error", company=company, error=str(e))
+                await event_bus.emit(user_id, "hr_stream", {
+                    "phase": "not_found",
+                    "company": company,
+                    "job_title": title,
+                })
+                return False
+
+    # Fire ALL lookups in parallel
+    await asyncio.gather(*[_lookup_one(entry) for entry in job_entries])
 
     await event_bus.emit_agent_completed(
         user_id, "hr_finder",
         f"HR search complete: {found_count}/{len(job_entries)} contacts found"
     )
     # Custom event so the frontend knows the BACKGROUND search is done
-    # (vs hr_finder events emitted during the tailor flow for a single company).
     await event_bus.emit(user_id, "hr_bg_search_done", {
         "found": found_count,
         "total": len(job_entries),
@@ -1072,8 +1094,23 @@ _APPROVAL_WORDS = frozenset({
 })
 
 def _is_explicit_approval(msg: str) -> bool:
-    """Return True only when the user's message is an explicit approval/confirmation."""
-    tokens = msg.lower().strip().split()
+    """Return True only when the user's message is a short, unambiguous approval.
+
+    H5/M8 fix: Require the message to be short (<=8 words) and not contain
+    qualifiers like 'but', 'however', 'also', 'change', 'edit', 'wait' that
+    indicate the user wants modifications, not a plain approval.
+    """
+    cleaned = msg.lower().strip()
+    tokens = cleaned.split()
+    # Must be a short message — long messages with "yes" are likely conditional
+    if len(tokens) > 8:
+        return False
+    # Reject if it contains qualifier/edit words
+    _DISQUALIFIERS = {"but", "however", "also", "change", "edit", "modify", "wait",
+                      "stop", "cancel", "don't", "dont", "no", "not", "instead",
+                      "actually", "different", "wrong", "fix", "update", "redo"}
+    if tokens and set(tokens) & _DISQUALIFIERS:
+        return False
     return any(word in _APPROVAL_WORDS for word in tokens[:6])
 
 
@@ -1110,6 +1147,12 @@ async def _handle_continuation(
                 job_id = job_entry.get("id")
                 if not job_id:
                     continue
+                # H2 fix: Verify job still exists in DB before referencing it
+                job_exists = await db.execute(
+                    select(Job).where(Job.id == job_id).limit(1)
+                )
+                if not job_exists.scalar_one_or_none():
+                    continue  # Job was deleted — skip ghost reference
                 app_check = await db.execute(
                     select(Application).where(
                         Application.user_id == user_id,
@@ -1164,12 +1207,18 @@ async def _handle_continuation(
             next_job = meta.get("next_job_suggestion")
             if next_job:
                 job_id = next_job.get("job_id")
-                if job_id:
+                if job_id and _is_explicit_approval(message):
                     await event_bus.emit_log_entry(
                         user_id, "supervisor", "Continuing Pipeline",
                         f"Moving to next job: {next_job.get('title','')} at {next_job.get('company','')}"
                     )
                     return await _handle_tailor_apply(user_id, job_id, db)
+                elif job_id:
+                    return (
+                        f"Next up: **{next_job.get('title','?')}** at **{next_job.get('company','?')}**.\n\n"
+                        "Type **'yes'** or **'next'** to start tailoring, or search for different jobs.",
+                        None,
+                    )
             return (
                 "All pending applications have been sent! "
                 "You can search for more jobs or check your Applications tab.",
@@ -1192,7 +1241,7 @@ async def _handle_continuation(
             None,
         )
 
-    # Look for recent unsent jobs
+    # Look for recent unsent jobs — suggest instead of auto-triggering (C3 fix)
     recent_job = await db.execute(
         select(Job).join(JobSearch)
         .where(JobSearch.user_id == user_id)
@@ -1200,7 +1249,13 @@ async def _handle_continuation(
     )
     job = recent_job.scalar_one_or_none()
     if job:
-        return await _handle_tailor_apply(user_id, job.id, db)
+        if _is_explicit_approval(message):
+            return await _handle_tailor_apply(user_id, job.id, db)
+        return (
+            f"You have a recent job: **{getattr(job, 'title', '?')}** at **{getattr(job, 'company', '?')}**.\n\n"
+            "Type **'yes'** to start tailoring your CV for it, or tell me what else you'd like to do.",
+            None,
+        )
 
     return (
         "I'm not sure what to continue — there's no active task in your session.\n\n"
@@ -2122,8 +2177,14 @@ async def _handle_send_email(
 
     if sent_ok:
         mock_note = " *(demo mode — connect Gmail to send for real)*" if is_mock else ""
+        # M16 fix: Warn user if PDF attachment failed
+        pdf_note = ""
+        if not pdf_bytes and cv_data_for_pdf:
+            pdf_note = "\n\n**Note:** CV PDF could not be generated. The email was sent without attachment."
+        elif not cv_data_for_pdf:
+            pdf_note = "\n\n**Note:** No CV data was available for PDF generation. The email was sent without attachment."
         text = (
-            f"Application for **{job_title}** at **{job_company}** sent to **{hr_email}**!{mock_note}"
+            f"Application for **{job_title}** at **{job_company}** sent to **{hr_email}**!{mock_note}{pdf_note}"
         )
     else:
         error_hint = f"\n\n**Error:** `{send_error}`" if send_error else ""

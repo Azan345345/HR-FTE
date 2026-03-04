@@ -29,13 +29,23 @@ async def upload_cv(
     if ext not in ("pdf", "docx"):
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
 
+    # H16 fix: Enforce file size limit (10MB) to prevent memory exhaustion
+    MAX_CV_SIZE = 10 * 1024 * 1024  # 10MB
+    content = await file.read()
+    if len(content) > MAX_CV_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large ({len(content) // (1024*1024)}MB). Maximum size is 10MB."
+        )
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="File is empty. Please upload a valid CV.")
+
     # Save file locally
     upload_dir = os.path.join(settings.UPLOAD_DIR, current_user.id)
     os.makedirs(upload_dir, exist_ok=True)
     file_id = str(uuid.uuid4())
     file_path = os.path.join(upload_dir, f"{file_id}.{ext}")
 
-    content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
 

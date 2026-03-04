@@ -94,6 +94,7 @@ export function EmailReviewCard({ metadata, onSendAction }: Props) {
   const changedLineCount = diffLines.filter(l => l.status !== "unchanged").length;
 
   // ── AI rewrite — applies to card preview immediately ───────────────────────
+  // M5 fix: Track pending rewrite to prevent duplicate requests
   const handleAiRewrite = async () => {
     if (!aiInstruction.trim() || aiLoading) return;
     setAiLoading(true);

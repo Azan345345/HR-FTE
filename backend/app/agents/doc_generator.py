@@ -8,16 +8,50 @@ from app.config import settings
 logger = structlog.get_logger()
 
 
+_UNICODE_FONT_REGISTERED = False
+
+def _register_unicode_font():
+    """Register a TTF font with Unicode support for ReportLab (M9 fix)."""
+    global _UNICODE_FONT_REGISTERED
+    if _UNICODE_FONT_REGISTERED:
+        return True
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import shutil
+        # Try common system font paths
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+        ]
+        # Also check if DejaVu is findable via shutil
+        dejavu = shutil.which("DejaVuSans.ttf")
+        if dejavu:
+            candidates.insert(0, dejavu)
+        for path in candidates:
+            if os.path.exists(path):
+                pdfmetrics.registerFont(TTFont("UnicodeFont", path))
+                _UNICODE_FONT_REGISTERED = True
+                logger.info("unicode_font_registered", path=path)
+                return True
+        logger.warning("no_unicode_font_found", tried=candidates)
+        return False
+    except Exception as e:
+        logger.warning("unicode_font_registration_failed", error=str(e))
+        return False
+
 def _x(text) -> str:
     """Escape text for safe use inside ReportLab Paragraph (XML + encoding safe)."""
     from xml.sax.saxutils import escape
     if text is None:
         return ""
     s = str(text)
-    # Encode to latin-1 (Windows-1252 superset) — the encoding used by ReportLab's
-    # standard Helvetica/Times fonts. Replace unsupported chars with '?' to avoid
-    # KeyError / UnicodeEncodeError inside doc.build().
-    s = s.encode("latin-1", errors="replace").decode("latin-1")
+    # M9 fix: If Unicode font is registered, keep full Unicode.
+    # Otherwise fall back to latin-1 replacement to avoid crashes.
+    if not _UNICODE_FONT_REGISTERED:
+        s = s.encode("latin-1", errors="replace").decode("latin-1")
     return escape(s)
 
 
@@ -28,13 +62,20 @@ def _build_cv_elements(tailored_data: dict) -> list:
     from reportlab.platypus import Paragraph, Spacer, HRFlowable
     from reportlab.lib.colors import HexColor
 
+    # M9 fix: Try to register Unicode font for proper diacritics/CJK support
+    _register_unicode_font()
+    font_name = "UnicodeFont" if _UNICODE_FONT_REGISTERED else "Helvetica"
+
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('CVTitle', parent=styles['Title'],
+                                 fontName=font_name,
                                  fontSize=18, textColor=HexColor('#1a1a2e'), spaceAfter=6)
     heading_style = ParagraphStyle('CVHeading', parent=styles['Heading2'],
+                                   fontName=font_name,
                                    fontSize=13, textColor=HexColor('#6366F1'),
                                    spaceAfter=4, spaceBefore=12)
     body_style = ParagraphStyle('CVBody', parent=styles['Normal'],
+                                fontName=font_name,
                                 fontSize=10, spaceAfter=3, leading=14)
     bullet_style = ParagraphStyle('CVBullet', parent=body_style,
                                   bulletIndent=15, leftIndent=25)

@@ -72,35 +72,42 @@ async def send_message(
     except Exception as e:
         response_text = f"I'm sorry, I encountered an error: {str(e)}. Please try again."
 
-    # The agent may have held db open for minutes — the original connection is
-    # likely dead after 30+ seconds of external API calls.  Use a fresh session
-    # so the assistant message save never fails due to a stale connection.
+    # C7 fix: Retry message persistence up to 3 times with backoff to prevent silent loss
     from app.db.database import AsyncSessionLocal
-    try:
-        async with AsyncSessionLocal() as fresh_db:
-            assistant_msg = ChatMessage(
-                user_id=user_id,
-                session_id=session_id,
-                role="assistant",
-                agent_name="supervisor",
-                content=response_text,
-                metadata_=response_metadata or {},
+    import asyncio as _asyncio
+    assistant_msg = None
+    for _attempt in range(3):
+        try:
+            async with AsyncSessionLocal() as fresh_db:
+                assistant_msg = ChatMessage(
+                    user_id=user_id,
+                    session_id=session_id,
+                    role="assistant",
+                    agent_name="supervisor",
+                    content=response_text,
+                    metadata_=response_metadata or {},
+                )
+                fresh_db.add(assistant_msg)
+                await fresh_db.commit()
+                await fresh_db.refresh(assistant_msg)
+                break  # Success
+        except Exception as e:
+            import structlog
+            structlog.get_logger().warning(
+                "chat_save_retry", attempt=_attempt + 1, error=str(e)
             )
-            fresh_db.add(assistant_msg)
-            await fresh_db.commit()
-            await fresh_db.refresh(assistant_msg)
-    except Exception as e:
-        # If even a fresh session fails, return the response without persisting
-        import structlog
-        structlog.get_logger().warning("chat_save_failed", error=str(e))
-        return ChatMessageResponse(
-            id="",
-            role="assistant",
-            agent_name="supervisor",
-            content=response_text,
-            metadata=response_metadata,
-            created_at=None,
-        )
+            if _attempt < 2:
+                await _asyncio.sleep(0.5 * (_attempt + 1))
+            else:
+                # Final attempt failed — return response without persisting
+                return ChatMessageResponse(
+                    id="",
+                    role="assistant",
+                    agent_name="supervisor",
+                    content=response_text,
+                    metadata=response_metadata,
+                    created_at=None,
+                )
 
     return ChatMessageResponse(
         id=assistant_msg.id,
@@ -247,6 +254,38 @@ async def upload_context(
         )
 
     return {"filename": filename, "content": extracted[:10000]}
+
+
+@router.post("/stop")
+async def stop_conversation(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist a 'Stopped' assistant message when the user switches away mid-request.
+
+    Lightweight — no AI processing, just a DB write so the message appears in history.
+    """
+    session_id = body.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    user_id = str(current_user.id)
+    try:
+        stopped_msg = ChatMessage(
+            user_id=user_id,
+            session_id=session_id,
+            role="assistant",
+            agent_name="supervisor",
+            content="⏹ **Stopped** — you switched to another conversation.",
+            metadata_={},
+        )
+        db.add(stopped_msg)
+        await db.commit()
+        return {"status": "saved"}
+    except Exception as e:
+        await db.rollback()
+        return {"status": "failed", "detail": str(e)}
 
 
 @router.patch("/draft/{session_id}")

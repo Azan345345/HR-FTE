@@ -128,7 +128,13 @@ class ApplicationPipelineController:
             except Exception as e:
                 logger.error("pipeline_job_failed", job_id=job.get("id"), error=str(e))
                 state["errors"] = state.get("errors", []) + [f"Failed to process job {job.get('company')}: {str(e)}"]
-                # Continue to next job despite failure
+                # H4 fix: Pop the failed job from queue to prevent infinite retry loop
+                if state["automation_queue"] and state["automation_queue"][0] is job:
+                    state["automation_queue"].pop(0)
+                state["current_work_item"] = None
+                state["draft_cv"] = None
+                state["draft_email"] = None
+                state["draft_cover_letter"] = None
                 continue
 
         state["automation_queue"] = []

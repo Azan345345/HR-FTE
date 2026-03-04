@@ -1,14 +1,15 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Component, ErrorInfo, ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import {
   Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
   Pencil, Sparkles, Search, FileText, Mail, Zap, Bot, Loader2, CheckCircle2, GitMerge,
-  Briefcase, Brain, ChevronRight,
+  Briefcase, Brain, ChevronRight, AlertTriangle,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { sendChatMessage, getChatHistory } from "@/services/api";
+import { sendChatMessage, getChatHistory, stopConversation } from "@/services/api";
+import { AbortedError } from "@/lib/api";
 import { useAgentStore, JobStreamState, StreamSource, StreamJob } from "@/stores/agent-store";
 import { JobResultsCard } from "./chat-cards/JobResultsCard";
 import { CVReviewCard } from "./chat-cards/CVReviewCard";
@@ -18,6 +19,34 @@ import { InterviewPrepCard } from "./chat-cards/InterviewPrepCard";
 import { CVSelectionCard } from "./chat-cards/CVSelectionCard";
 import { CVImprovementActionCard } from "./chat-cards/CVImprovementActionCard";
 import { CVImprovedCard } from "./chat-cards/CVImprovedCard";
+
+// C5 fix: Error boundary prevents chat card crashes from taking down the entire UI
+class CardErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Chat card render error:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2">
+          <AlertTriangle size={14} />
+          <span>This card could not be displayed. The data may be incomplete.</span>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface ChatMessage {
   id: string;
@@ -607,14 +636,36 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // AbortController + session ID to cancel in-flight chat requests on conversation switch
+  const abortRef = useRef<{ controller: AbortController; sessionId: string } | null>(null);
 
-  const { jobStream, clearJobStream, agents } = useAgentStore();
+  const { jobStream, clearJobStream, agents, resetAll: resetAgentStore } = useAgentStore();
   const hrProcessing = agents.hr_finder?.status === "processing";
 
   const sessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => { sessionIdRef.current = activeSessionId; }, [activeSessionId]);
 
   useEffect(() => {
+    // Abort any in-flight chat request from the previous conversation
+    if (abortRef.current) {
+      const { controller, sessionId: oldSessionId } = abortRef.current;
+      controller.abort();
+      // Persist "Stopped" message to DB so it appears when the user returns
+      if (oldSessionId) {
+        stopConversation(oldSessionId).catch(() => {});
+      }
+      abortRef.current = null;
+    }
+    // C2 fix: Reset agent store on conversation switch to prevent state leak
+    resetAgentStore();
+    // M2 fix: Clear input state on conversation switch
+    setInputValue("");
+    setActiveCommand(null);
+    setAttachedFile(null);
+    setSlashMenuOpen(false);
+    setSlashQuery("");
+    setIsSending(false);
+
     if (activeSessionId) {
       setMessages([]);
       setIsSending(true);
@@ -685,9 +736,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     setMessages((prev) => [...prev, newMsg]);
     setIsSending(true);
 
+    // Create a new AbortController for this request (with session ID for stop persistence)
+    const controller = new AbortController();
+    const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
+    abortRef.current = { controller, sessionId: targetSessionId };
+
     try {
-      const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
-      const resp = await sendChatMessage(backendText, targetSessionId, pipeline);
+      const resp = await sendChatMessage(backendText, targetSessionId, pipeline, controller.signal);
       if (!activeSessionId) onSessionCreated(targetSessionId);
       // Clear live stream panel when final job results card arrives — avoids duplication
       if (resp.metadata?.type === "job_results") clearJobStream();
@@ -701,26 +756,35 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
         },
       ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: "⚠️ Couldn't reach the backend. Please try again in a moment.",
-          time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-        },
-      ]);
+    } catch (err) {
+      if (err instanceof AbortedError) {
+        // "Stopped" is persisted to DB by the session-switch effect — no local bubble needed
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "⚠️ Couldn't reach the backend. Please try again in a moment.",
+            time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+          },
+        ]);
+      }
     } finally {
       setIsSending(false);
+      if (abortRef.current?.controller === controller) abortRef.current = null;
     }
   };
 
   const sendAction = async (action: string) => {
     setIsSending(true);
+
+    const controller = new AbortController();
+    const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
+    abortRef.current = { controller, sessionId: targetSessionId };
+
     try {
-      const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
-      const resp = await sendChatMessage(action, targetSessionId);
+      const resp = await sendChatMessage(action, targetSessionId, undefined, controller.signal);
       if (!activeSessionId) onSessionCreated(targetSessionId);
 
       // cv_review with auto_open_edit: don't add a card to chat — just open the modal silently
@@ -739,18 +803,24 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
         },
       ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: "⚠️ Failed to process action. Please try again.",
-          time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-        },
-      ]);
+    } catch (err) {
+      if (err instanceof AbortedError) {
+        // "Stopped" is persisted to DB by the session-switch effect — no local bubble needed
+        // since the user already left this conversation
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "⚠️ Failed to process action. Please try again.",
+            time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+          },
+        ]);
+      }
     } finally {
       setIsSending(false);
+      if (abortRef.current?.controller === controller) abortRef.current = null;
     }
   };
 
@@ -805,6 +875,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       setAttachedFile({ name: file.name, content: resp.content });
       inputRef.current?.focus();
     } catch (err: any) {
+      // M3 fix: Clear attachment state on upload error so UI doesn't show stale badge
+      setAttachedFile(null);
       toast.error(err.message || `Could not read ${file.name}. Try saving as .txt and re-attaching.`);
     } finally {
       setIsUploading(false);
@@ -934,7 +1006,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
                   {msg.content}
                 </ReactMarkdown>
               </div>
-              {renderMetadataCard(msg)}
+              <CardErrorBoundary>{renderMetadataCard(msg)}</CardErrorBoundary>
             </AgentBubble>
           );
         })}

@@ -7,6 +7,16 @@ interface FetchOptions extends RequestInit {
 }
 
 /**
+ * Custom error class to identify user-initiated aborts (conversation switch).
+ */
+export class AbortedError extends Error {
+    constructor() {
+        super("Request was cancelled");
+        this.name = "AbortedError";
+    }
+}
+
+/**
  * Typed fetch wrapper for the Digital FTE API.
  */
 export async function api<T>(endpoint: string, options: FetchOptions = {}): Promise<T> {
@@ -18,12 +28,28 @@ export async function api<T>(endpoint: string, options: FetchOptions = {}): Prom
         ...customHeaders,
     };
 
-    const response = await fetch(`${API_BASE}/api${endpoint}`, {
-        ...fetchOptions,
-        headers,
-    });
+    let response: Response;
+    try {
+        response = await fetch(`${API_BASE}/api${endpoint}`, {
+            ...fetchOptions,
+            headers,
+        });
+    } catch (err: any) {
+        // Distinguish user-initiated abort from network errors
+        if (err?.name === "AbortError") {
+            throw new AbortedError();
+        }
+        throw err;
+    }
 
     if (!response.ok) {
+        // C4 fix: Handle 401 token expiry — redirect to login
+        if (response.status === 401) {
+            localStorage.removeItem("token");
+            localStorage.removeItem("user");
+            window.location.href = "/login";
+            throw new Error("Session expired. Please log in again.");
+        }
         const error = await response.json().catch(() => ({ detail: "Unknown error" }));
         throw new Error(error.detail || `API Error ${response.status}`);
     }

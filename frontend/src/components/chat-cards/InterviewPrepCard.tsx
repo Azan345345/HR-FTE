@@ -41,7 +41,12 @@ const CATEGORY_COLORS = [
 ];
 
 export function InterviewPrepCard({ metadata, onSendAction }: Props) {
-  const { job, categories, prep_id, salary_range, questions_to_ask = [] } = metadata;
+  // C5 fix: Null guards
+  const job = metadata?.job ?? { title: "Unknown", company: "Unknown" };
+  const categories = metadata?.categories ?? [];
+  const prep_id = metadata?.prep_id;
+  const salary_range = metadata?.salary_range;
+  const questions_to_ask = metadata?.questions_to_ask ?? [];
 
   return (
     <motion.div

@@ -132,6 +132,9 @@ async def list_jobs(
     current_user: User = Depends(get_current_user),
 ):
     """List jobs from previous searches."""
+    # L10 fix: Cap limit/offset to prevent full table scans
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
     query = (
         select(Job)
         .join(JobSearch)

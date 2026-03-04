@@ -74,7 +74,8 @@ async def parse_cv_file(file_path: str, file_type: str, user_id: str = "unknown"
     if not raw_text.strip():
         logger.warning("empty_cv_text", file_path=file_path)
         await event_bus.emit_agent_error(user_id, "cv_parser", "Could not extract text from CV")
-        return {"error": "Could not extract text from CV"}
+        # H10 fix: Raise exception instead of returning error dict that callers treat as valid CV
+        raise ValueError("Could not extract text from CV. The file may be empty or image-only.")
 
     # Step 2: Use LLM to parse structured data
     await event_bus.emit_agent_progress(user_id, "cv_parser", 2, 3, "Analyzing structure with AI")

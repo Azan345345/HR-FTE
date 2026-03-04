@@ -20,7 +20,10 @@ interface CVSelectionCardProps {
 }
 
 export function CVSelectionCard({ metadata, onSendAction }: CVSelectionCardProps) {
-  const { cvs, pending_intent, pending_context } = metadata;
+  // C5 fix: Null guards
+  const cvs = metadata?.cvs ?? [];
+  const pending_intent = metadata?.pending_intent ?? "";
+  const pending_context = metadata?.pending_context ?? "";
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 

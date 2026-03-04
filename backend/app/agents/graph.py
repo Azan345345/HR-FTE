@@ -19,6 +19,20 @@ def build_workflow() -> StateGraph:
 
     async def supervisor_node(state: DigitalFTEState) -> dict:
         """Supervisor decides what to do next based on state."""
+        try:
+            return await _supervisor_logic(state)
+        except Exception as e:
+            # C6 fix: Reset waiting_for_user on any exception to prevent stuck state
+            logger.error("supervisor_node_error", error=str(e))
+            return {
+                "waiting_for_user": False,
+                "next_step": "end",
+                "current_agent": "supervisor",
+                "response_text": f"An error occurred: {str(e)}. Please try again.",
+            }
+
+    async def _supervisor_logic(state: DigitalFTEState) -> dict:
+        """Core supervisor routing logic."""
         user_msg = state.get("user_message", "")
         parsed_cv = state.get("parsed_cv")
         raw_cv_path = state.get("raw_cv_path")

@@ -22,12 +22,15 @@ class GmailWatcher:
         self._last_check_at: str | None = None
 
     async def start(self):
-        """Start the background watching loop."""
-        if self.is_running:
-            return
-        self.is_running = True
-        self._task = asyncio.create_task(self._run_loop())
-        logger.info("gmail_watcher_started", interval=self.interval)
+        """Start the background watching loop.
+
+        M12: Currently a stub — logs a warning and does NOT start polling.
+        Enable when real Gmail reply detection is implemented.
+        """
+        # M12 fix: Don't start a useless polling loop that does nothing
+        logger.info("gmail_watcher_stub_skipped",
+                     note="Gmail reply detection not implemented yet. Skipping background poll.")
+        return
 
     async def stop(self):
         """Stop the background watching loop."""

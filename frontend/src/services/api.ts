@@ -123,11 +123,22 @@ export interface ChatMessageResponse {
 }
 
 // ── Chat Service ─────────────────────────────
-export function sendChatMessage(message: string, sessionId?: string, pipeline?: string) {
+export function sendChatMessage(
+    message: string, sessionId?: string, pipeline?: string, signal?: AbortSignal,
+) {
     return api<ChatMessageResponse>("/chat/send", {
         method: "POST",
         token: getToken(),
         body: JSON.stringify({ message, session_id: sessionId, pipeline }),
+        signal,
+    });
+}
+
+export function stopConversation(sessionId: string) {
+    return api<{ status: string }>("/chat/stop", {
+        method: "POST",
+        token: getToken(),
+        body: JSON.stringify({ session_id: sessionId }),
     });
 }
 
