@@ -99,12 +99,10 @@ export function useWebSocket(token: string | null) {
                         thought: (data.thought as string) || (plan.length > 60 ? plan : undefined),
                         status: "running",
                     });
-                    // Start job stream panel when job_hunter begins
+                    // Start job stream panel when job_hunter begins, and
+                    // clear stale HR results so cards start fresh for this search.
                     if (agentName === "job_hunter") {
                         startJobStream();
-                    }
-                    // Reset HR results when a new HR search begins
-                    if (agentName === "hr_finder") {
                         clearHrResults();
                     }
                     break;
@@ -159,10 +157,10 @@ export function useWebSocket(token: string | null) {
                         duration: data.time_taken ? `${Number(data.time_taken).toFixed(1)}s` : undefined,
                         tokens: data.tokens_used ? `${data.tokens_used} tokens` : undefined,
                     });
-                    // Mark HR search as done so JobResultsCard knows to stop spinners
-                    if (agentName === "hr_finder") {
-                        setHrSearchDone();
-                    }
+                    // Note: setHrSearchDone() is triggered by the custom "hr_bg_search_done"
+                    // event emitted at the end of the background HR lookup, NOT here.
+                    // This prevents the tailor flow's hr_finder completion from
+                    // prematurely marking all pending job cards as "not_found".
                     break;
                 }
 
@@ -262,6 +260,11 @@ export function useWebSocket(token: string | null) {
                     }
                     break;
                 }
+
+                case "hr_bg_search_done":
+                    // Background HR lookup finished — stop spinners on remaining cards.
+                    setHrSearchDone();
+                    break;
 
                 case "pong":
                     break;

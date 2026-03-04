@@ -18,6 +18,10 @@ from app.core.event_bus import event_bus
 
 logger = structlog.get_logger()
 
+# Strong references to background tasks — prevents Python GC from collecting
+# asyncio.create_task() results before they complete (Python 3.10+ documented issue).
+_background_tasks: set = set()
+
 
 def _ensure_str(value) -> str:
     """Coerce a value to a string. Handles lists like ['Full-time'] → 'Full-time'."""
@@ -894,7 +898,10 @@ Return ONLY valid JSON."""
 
     # Launch HR lookup as a background asyncio task — does NOT block the HTTP response.
     # Results stream to the frontend via hr_stream WebSocket events.
-    asyncio.create_task(_bg_hr_lookup(user_id, job_entries_for_hr))
+    # Store a strong reference in _background_tasks to prevent GC collection.
+    _task = asyncio.create_task(_bg_hr_lookup(user_id, job_entries_for_hr))
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
     await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} positions — searching HR contacts in background")
     await event_bus.emit_workflow_update(user_id, "job_hunter", ["job_hunter"], ["hr_finder", "cv_tailor", "email_sender"])
@@ -1012,6 +1019,12 @@ async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
         user_id, "hr_finder",
         f"HR search complete: {found_count}/{len(job_entries)} contacts found"
     )
+    # Custom event so the frontend knows the BACKGROUND search is done
+    # (vs hr_finder events emitted during the tailor flow for a single company).
+    await event_bus.emit(user_id, "hr_bg_search_done", {
+        "found": found_count,
+        "total": len(job_entries),
+    })
 
 
 # ── Continuation Handler ──────────────────────────────────────────────────────

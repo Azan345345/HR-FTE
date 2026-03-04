@@ -1,6 +1,7 @@
 """Job Hunter Agent — searches jobs across multiple platforms with deduplication."""
 
 import re
+import asyncio
 import structlog
 import json
 from typing import Optional
@@ -177,70 +178,44 @@ Return ONLY JSON."""
             "count": len(jobs),
         })
 
-    # 2. Apify Indeed (real listings — broad international coverage)
-    if settings.APIFY_API_KEY:
+    # 2. Build source tasks — run ALL sources concurrently so the total wait time
+    #    equals the SLOWEST source (not the sum), preventing Railway proxy timeouts.
+    async def _run_source(source_key: str, source_label: str, coro) -> tuple[str, list[dict]]:
+        await event_bus.emit(user_id, "jobs_stream", {
+            "phase": "source_start", "source": source_key, "source_label": source_label
+        })
         try:
-            await event_bus.emit(user_id, "jobs_stream", {
-                "phase": "source_start", "source": "indeed", "source_label": "Indeed"
-            })
-            apify_jobs = await _search_apify_indeed(
-                search_title, search_location, limit, country_code, job_type
-            )
-            all_jobs.extend(apify_jobs)
-            sources_tried.append("indeed")
-            await _emit_batch("indeed", "Indeed", apify_jobs)
-            logger.info("apify_indeed_results", count=len(apify_jobs))
+            jobs = await coro
+            await _emit_batch(source_key, source_label, jobs)
+            logger.info(f"{source_key}_results", count=len(jobs))
+            return source_key, jobs
         except Exception as e:
-            logger.warning("apify_indeed_failed", error=str(e))
+            logger.warning(f"{source_key}_failed", error=str(e))
+            return source_key, []
 
-    # 2b. Apify LinkedIn (secondary source)
+    source_tasks = []
     if settings.APIFY_API_KEY:
-        try:
-            await event_bus.emit(user_id, "jobs_stream", {
-                "phase": "source_start", "source": "linkedin", "source_label": "LinkedIn"
-            })
-            linkedin_jobs = await _search_apify_linkedin(
-                search_title, search_location, limit, country_code, job_type
-            )
-            all_jobs.extend(linkedin_jobs)
-            sources_tried.append("linkedin")
-            await _emit_batch("linkedin", "LinkedIn", linkedin_jobs)
-            logger.info("apify_linkedin_results", count=len(linkedin_jobs))
-        except Exception as e:
-            logger.warning("apify_linkedin_failed", error=str(e))
-
-    # 3. SerpAPI Google Jobs
+        source_tasks.append(_run_source("indeed", "Indeed",
+            _search_apify_indeed(search_title, search_location, limit, country_code, job_type)))
+        source_tasks.append(_run_source("linkedin", "LinkedIn",
+            _search_apify_linkedin(search_title, search_location, limit, country_code, job_type)))
     if settings.SERPAPI_API_KEY:
-        try:
-            await event_bus.emit(user_id, "jobs_stream", {
-                "phase": "source_start", "source": "google_jobs",
-                "source_label": f"Google Jobs ({country_name or 'Global'})"
-            })
-            serpapi_jobs = await _search_serpapi(
-                search_title, search_location, limit, country_code, job_type
-            )
-            all_jobs.extend(serpapi_jobs)
-            sources_tried.append("google_jobs")
-            await _emit_batch("google_jobs", f"Google Jobs", serpapi_jobs)
-            logger.info("serpapi_results", count=len(serpapi_jobs))
-        except Exception as e:
-            logger.warning("serpapi_failed", error=str(e))
-
-    # 4. RapidAPI JSearch
+        source_tasks.append(_run_source("google_jobs", f"Google Jobs ({country_name or 'Global'})",
+            _search_serpapi(search_title, search_location, limit, country_code, job_type)))
     if settings.RAPIDAPI_KEY:
-        try:
-            await event_bus.emit(user_id, "jobs_stream", {
-                "phase": "source_start", "source": "jsearch", "source_label": "JSearch"
-            })
-            jsearch_jobs = await _search_jsearch(
-                search_title, search_location, limit, country_code, job_type
-            )
-            all_jobs.extend(jsearch_jobs)
-            sources_tried.append("jsearch")
-            await _emit_batch("jsearch", "JSearch", jsearch_jobs)
-            logger.info("jsearch_results", count=len(jsearch_jobs))
-        except Exception as e:
-            logger.warning("jsearch_failed", error=str(e))
+        source_tasks.append(_run_source("jsearch", "JSearch",
+            _search_jsearch(search_title, search_location, limit, country_code, job_type)))
+
+    if source_tasks:
+        results = await asyncio.gather(*source_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("source_task_exception", error=str(result))
+                continue
+            source_key, jobs = result
+            if jobs:
+                sources_tried.append(source_key)
+            all_jobs.extend(jobs)
 
     # 5. LLM fallback — runs only when every real API returned nothing
     if not all_jobs:
@@ -357,7 +332,7 @@ async def _search_apify_indeed(
     elif job_type in _indeed_job_type:
         payload["jobType"] = _indeed_job_type[job_type]
 
-    async with httpx.AsyncClient(timeout=150) as client:
+    async with httpx.AsyncClient(timeout=35) as client:
         response = await client.post(url, json=payload)
         response.raise_for_status()
         items = response.json()
@@ -431,7 +406,7 @@ async def _search_apify_linkedin(
     if job_type in _li_work_type:
         payload["workTypes"] = [_li_work_type[job_type]]
 
-    async with httpx.AsyncClient(timeout=150) as client:
+    async with httpx.AsyncClient(timeout=35) as client:
         response = await client.post(url, json=payload)
         response.raise_for_status()
         items = response.json()
@@ -601,8 +576,9 @@ async def _search_serpapi(
         "no_cache": "true",        # always fetch fresh results, bypass SerpAPI cache
     }
 
+    loop = asyncio.get_event_loop()
     search = GoogleSearch(params)
-    results = search.get_dict()
+    results = await loop.run_in_executor(None, search.get_dict)
 
     jobs = []
     for item in results.get("jobs_results", []):
