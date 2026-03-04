@@ -790,13 +790,14 @@ Return ONLY valid JSON."""
     cv_id = cv.id if cv else None
     cv_parsed_data = cv.parsed_data if cv else None
 
-    # Search jobs (long-running external API calls — DB connection will be refreshed after)
+    # Always fetch broadly (20 per source) — user sees ALL unique results, not a
+    # truncated subset. HR lookup runs on ALL found jobs.
     jobs = await search_jobs(
         query=search_query,
         user_id=user_id,
         location=location,
         job_type=job_type,
-        limit=limit,
+        limit=20,
         cv_data=cv_parsed_data,
     )
 
@@ -805,6 +806,41 @@ Return ONLY valid JSON."""
         return (
             "I couldn't find any jobs matching your criteria. "
             "Try a different search query or location.",
+            None,
+        )
+
+    # ── Exclude jobs already saved for this user (prevents repeated searches
+    #    from showing the same listings over and over). ───────────────────────
+    try:
+        from app.db.database import AsyncSessionLocal as _ASL2
+        from app.agents.job_hunter import _norm_company, _norm_title
+        async with _ASL2() as _dedup_db:
+            existing_result = await _dedup_db.execute(
+                select(Job.company, Job.title)
+                .join(JobSearch, Job.search_id == JobSearch.id)
+                .where(JobSearch.user_id == user_id)
+            )
+            existing_keys = {
+                f"{_norm_company(r[0])}|{_norm_title(r[1])}"
+                for r in existing_result.fetchall()
+            }
+        if existing_keys:
+            before_filter = len(jobs)
+            jobs = [
+                j for j in jobs
+                if f"{_norm_company(j.get('company',''))}|{_norm_title(j.get('title',''))}" not in existing_keys
+            ]
+            removed = before_filter - len(jobs)
+            if removed:
+                logger.info("filtered_existing_jobs", removed=removed, remaining=len(jobs))
+    except Exception as e:
+        logger.warning("dedup_filter_failed", error=str(e))
+
+    if not jobs:
+        await event_bus.emit_agent_completed(user_id, "job_hunter", "No new jobs found")
+        return (
+            "All the matching jobs have already been shown to you in previous searches. "
+            "Try a different role, location, or job type to find new listings.",
             None,
         )
 

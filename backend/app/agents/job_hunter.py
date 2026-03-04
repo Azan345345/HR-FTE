@@ -23,6 +23,23 @@ _TITLE_LEVELS = re.compile(
 )
 _WHITESPACE = re.compile(r"\s+")
 
+# Domains that are job-listing aggregators, NOT company domains.
+# Used to avoid sending HR-finder lookups to indeed.com, linkedin.com, etc.
+_JOB_BOARD_DOMAINS = frozenset({
+    "indeed.com", "linkedin.com", "glassdoor.com", "ziprecruiter.com",
+    "monster.com", "google.com", "lever.co", "greenhouse.io",
+    "workday.com", "smartrecruiters.com", "applytojob.com",
+    "talent.com", "salary.com", "jora.com", "adzuna.com",
+    "careerbuilder.com", "dice.com", "reed.co.uk", "simplyhired.com",
+    "roberthalf.com", "snagajob.com", "hired.com", "wellfound.com",
+    "angel.co", "remotive.com", "weworkremotely.com", "flexjobs.com",
+    "jobvite.com", "icims.com", "myworkdayjobs.com", "breezy.hr",
+    "recruitee.com", "ashbyhq.com", "jobs.lever.co", "boards.greenhouse.io",
+    "apply.workable.com", "careers.jobscore.com", "bamboohr.com",
+    "paylocity.com", "paycom.com", "naukri.com", "seek.com.au",
+    "totaljobs.com", "cwjobs.co.uk", "cv-library.co.uk", "jooble.org",
+})
+
 
 def _norm_company(name: str) -> str:
     s = _COMPANY_NOISE.sub("", name.lower())
@@ -275,9 +292,11 @@ Return ONLY JSON."""
     sources_label = "+".join(sources_tried) if sources_tried else "no sources"
     await event_bus.emit_agent_completed(
         user_id, "job_hunter",
-        f"Found {len(unique_jobs[:limit])} unique positions across {sources_label}"
+        f"Found {len(unique_jobs)} unique positions across {sources_label}"
     )
-    return unique_jobs[:limit]
+    # Return ALL unique jobs — caller decides how many to display.
+    # HR lookup should run on ALL of them, not a truncated subset.
+    return unique_jobs
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -343,13 +362,17 @@ async def _search_apify_indeed(
         company = item.get("company") or ""
         if not title or not company:
             continue
+        # Try to extract real company domain from externalApplyLink
+        apply_url = item.get("externalApplyLink") or item.get("url") or ""
+        d = _extract_domain_from_url(apply_url)
+        domain = d if d and not _is_job_board(d) else _guess_domain(company)
         jobs.append({
             "title": title,
             "company": company,
             "location": item.get("location") or "",
             "description": item.get("description") or item.get("jobDescription") or "",
             "source": "indeed",
-            "application_url": item.get("externalApplyLink") or item.get("url") or "",
+            "application_url": apply_url,
             "posted_date": item.get("postedAt") or item.get("postedTime") or "",
             "salary_range": item.get("salary") or "",
             "job_type": _ensure_str(item.get("jobType")),
@@ -358,7 +381,7 @@ async def _search_apify_indeed(
             ),
             "matching_skills": [],
             "missing_skills": [],
-            "company_domain": _guess_domain(company),
+            "company_domain": domain,
         })
     return jobs[:limit]
 
@@ -457,6 +480,17 @@ async def _search_apify_linkedin(
             item.get("employmentType") or item.get("jobType")
         )
 
+        # Try company website from actor data, then apply URL, then guess
+        company_url = (
+            company_obj.get("url") or company_obj.get("website") or
+            company_obj.get("companyUrl") or ""
+        )
+        d = _extract_domain_from_url(company_url)
+        if not d or _is_job_board(d):
+            d = _extract_domain_from_url(apply_url)
+        if not d or _is_job_board(d):
+            d = _guess_domain(company)
+
         jobs.append({
             "title": title,
             "company": company,
@@ -471,7 +505,7 @@ async def _search_apify_linkedin(
             "requirements": _extract_requirements(description),
             "matching_skills": [],
             "missing_skills": [],
-            "company_domain": _guess_domain(company),
+            "company_domain": d,
         })
     return jobs[:limit]
 
@@ -496,6 +530,20 @@ def _ensure_str(value) -> str:
     if isinstance(value, list):
         return ", ".join(str(v) for v in value) if value else ""
     return str(value)
+
+
+def _is_job_board(domain: str) -> bool:
+    """Return True if the domain belongs to a known job-listing site."""
+    d = domain.lower().strip()
+    return any(d == jb or d.endswith("." + jb) for jb in _JOB_BOARD_DOMAINS)
+
+
+def _extract_domain_from_url(url: str) -> str:
+    """Extract domain from a URL, stripping protocol and www prefix."""
+    if not url:
+        return ""
+    d = re.sub(r"^https?://(www\.)?", "", url).split("/")[0].strip()
+    return d if d and "." in d else ""
 
 
 def _guess_domain(company: str) -> str:
@@ -598,13 +646,9 @@ async def _search_serpapi(
         domain = ""
         for opt in (item.get("apply_options") or []):
             link = opt.get("link", "")
-            # Skip job-board URLs; keep company career-page domains
-            if link and not any(jb in link for jb in (
-                "indeed.com", "linkedin.com", "glassdoor.com", "ziprecruiter.com",
-                "monster.com", "google.com", "lever.co", "greenhouse.io",
-                "workday.com", "smartrecruiters.com", "applytojob.com",
-            )):
-                domain = re.sub(r"^https?://(www\.)?", "", link).split("/")[0]
+            d = _extract_domain_from_url(link)
+            if d and not _is_job_board(d):
+                domain = d
                 break
         if not domain:
             domain = _guess_domain(company)
@@ -670,8 +714,9 @@ async def _search_jsearch(
         company = item.get("employer_name", "")
         # Use real employer_website when available (e.g. "https://www.google.com")
         raw_website = item.get("employer_website") or ""
-        if raw_website:
-            domain = re.sub(r"^https?://(www\.)?", "", raw_website).strip("/")
+        d = _extract_domain_from_url(raw_website)
+        if d and not _is_job_board(d):
+            domain = d
         else:
             domain = _guess_domain(company)
         jobs.append({
