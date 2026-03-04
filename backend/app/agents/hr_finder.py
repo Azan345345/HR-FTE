@@ -80,6 +80,19 @@ _CONTACT_PATHS = [
 # Prefixes we run Hunter Email Verifier on (saves credits vs verifying all)
 _VERIFY_PREFIXES = {"hr", "careers", "talent", "recruiting", "jobs"}
 
+# Company names that are placeholders — never a real company, skip HR lookup.
+_INVALID_COMPANIES = frozenset({
+    "confidential", "undisclosed", "n/a", "na", "unknown", "anonymous",
+    "not disclosed", "company confidential", "stealth", "stealth startup",
+    "private", "private company", "various", "multiple companies",
+    "hiring company", "employer", "client", "staffing agency",
+})
+
+
+def _is_invalid_company(name: str) -> bool:
+    """Return True if the company name is a placeholder/invalid for HR lookup."""
+    return name.strip().lower() in _INVALID_COMPANIES
+
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
@@ -124,6 +137,16 @@ async def _find_hr_contact_impl(
       5. Pattern fallback + Hunter verifier
     """
     from app.config import settings
+
+    # Skip entirely for placeholder company names (e.g. "Confidential")
+    if _is_invalid_company(company):
+        logger.info("skipping_invalid_company", company=company)
+        return {
+            "hr_name": "", "hr_email": "", "hr_title": "", "hr_linkedin": "",
+            "careers_page": "", "confidence_score": 0.0, "verified": False,
+            "source": "skipped_invalid_company", "resolved_domain": "",
+            "all_recipients": [], "api_errors": [],
+        }
 
     api_errors = []
     all_contacts: list[dict] = []
@@ -304,6 +327,12 @@ async def _hunter_company_search(
             raise ValueError("Hunter API key invalid or quota exhausted")
         if resp.status_code == 429:
             raise ValueError("Hunter API rate limit hit")
+        if resp.status_code == 400:
+            # Company name not recognized by Hunter (e.g. too short, placeholder).
+            # Return empty results so next strategies can try.
+            logger.info("hunter_400_bad_request", company=company,
+                        body=resp.text[:200])
+            return [], None
         resp.raise_for_status()
         data = resp.json()
 
@@ -376,6 +405,9 @@ async def _hunter_domain_search(
             raise ValueError("Hunter API key invalid or quota exhausted")
         if resp.status_code == 429:
             raise ValueError("Hunter API rate limit hit")
+        if resp.status_code == 400:
+            logger.info("hunter_domain_400", domain=domain, body=resp.text[:200])
+            return []
         resp.raise_for_status()
         data = resp.json()
 
