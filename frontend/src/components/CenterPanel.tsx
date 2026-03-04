@@ -709,7 +709,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const handleSend = async (overrideText?: string, overridePipeline?: string) => {
     const text = (overrideText || inputValue).trim();
     if (!text && !attachedFile) return;
-    if (isSending && !overrideText) return;
+    // No lock — user can send new messages while previous ones are still in flight
 
     const pipeline = overridePipeline ?? (activeCommand?.pipeline);
     const fileSnap = attachedFile;
@@ -1179,9 +1179,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
                 handleSend();
               }
             }}
-            disabled={isSending}
             placeholder={activeCommand?.hint ?? "Message CareerAgent… (/ for commands, Enter to send)"}
-            className="w-full px-5 pt-3.5 pb-12 bg-transparent text-[13px] text-foreground placeholder:text-slate-400 outline-none resize-none leading-relaxed disabled:opacity-50 max-h-40"
+            className="w-full px-5 pt-3.5 pb-12 bg-transparent text-[13px] text-foreground placeholder:text-slate-400 outline-none resize-none leading-relaxed max-h-40"
             style={{ minHeight: "52px" }}
           />
           {/* Bottom toolbar */}
@@ -1197,13 +1196,13 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
             </button>
             <button
               onClick={() => handleSend()}
-              disabled={(!inputValue.trim() && !attachedFile) || isSending}
+              disabled={!inputValue.trim() && !attachedFile}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-semibold transition-all duration-200 active:scale-[0.96] ${
-                (inputValue.trim() || attachedFile) && !isSending
+                (inputValue.trim() || attachedFile)
                   ? "bg-primary text-white hover:brightness-110"
                   : "bg-slate-100 text-slate-300 cursor-not-allowed"
               }`}
-              style={(inputValue.trim() || attachedFile) && !isSending ? { boxShadow: "var(--shadow-brand-sm)" } : {}}
+              style={(inputValue.trim() || attachedFile) ? { boxShadow: "var(--shadow-brand-sm)" } : {}}
             >
               <ArrowUp size={13} />
               Send
