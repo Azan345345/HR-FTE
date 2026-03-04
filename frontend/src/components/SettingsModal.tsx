@@ -620,7 +620,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         open={!!cvDeleteTarget}
         onOpenChange={(v) => { if (!v) setCvDeleteTarget(null); }}
         onConfirm={handleCVDelete}
-        onSuccess={() => { setCvDeleteTarget(null); fetchCVs(); }}
+        onSuccess={() => { setCvDeleteTarget(null); window.location.reload(); }}
         title="Delete CV"
         description={`"${cvDeleteTarget?.name ?? ""}" and all its tailored versions and generated PDFs will be permanently deleted. This cannot be undone.`}
         confirmLabel="Delete CV"
@@ -632,7 +632,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         open={showAccountDeleteModal}
         onOpenChange={setShowAccountDeleteModal}
         onConfirm={handleDeleteAccount}
-        onSuccess={() => { logout(); onOpenChange(false); }}
+        onSuccess={() => { logout(); window.location.reload(); }}
         title="Delete your account"
         description="This will permanently delete your account, all uploaded CVs, job applications, tailored documents, and every other piece of data associated with your profile. There is no way to recover it."
         confirmText="DELETE"

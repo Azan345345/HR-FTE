@@ -28,5 +28,10 @@ export async function api<T>(endpoint: string, options: FetchOptions = {}): Prom
         throw new Error(error.detail || `API Error ${response.status}`);
     }
 
+    // 204 No Content — return undefined (used by DELETE endpoints)
+    if (response.status === 204 || response.headers.get("content-length") === "0") {
+        return undefined as T;
+    }
+
     return response.json() as Promise<T>;
 }
