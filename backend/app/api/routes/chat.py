@@ -72,25 +72,35 @@ async def send_message(
     except Exception as e:
         response_text = f"I'm sorry, I encountered an error: {str(e)}. Please try again."
 
-    # The agent may have held db open for minutes — rollback any stale state
-    # so the session is clean before we write the assistant message.
+    # The agent may have held db open for minutes — the original connection is
+    # likely dead after 30+ seconds of external API calls.  Use a fresh session
+    # so the assistant message save never fails due to a stale connection.
+    from app.db.database import AsyncSessionLocal
     try:
-        await db.rollback()
-    except Exception:
-        pass
-
-    # Save assistant response with metadata
-    assistant_msg = ChatMessage(
-        user_id=user_id,
-        session_id=session_id,
-        role="assistant",
-        agent_name="supervisor",
-        content=response_text,
-        metadata_=response_metadata or {},
-    )
-    db.add(assistant_msg)
-    await db.commit()
-    await db.refresh(assistant_msg)
+        async with AsyncSessionLocal() as fresh_db:
+            assistant_msg = ChatMessage(
+                user_id=user_id,
+                session_id=session_id,
+                role="assistant",
+                agent_name="supervisor",
+                content=response_text,
+                metadata_=response_metadata or {},
+            )
+            fresh_db.add(assistant_msg)
+            await fresh_db.commit()
+            await fresh_db.refresh(assistant_msg)
+    except Exception as e:
+        # If even a fresh session fails, return the response without persisting
+        import structlog
+        structlog.get_logger().warning("chat_save_failed", error=str(e))
+        return ChatMessageResponse(
+            id="",
+            role="assistant",
+            agent_name="supervisor",
+            content=response_text,
+            metadata=response_metadata,
+            created_at=None,
+        )
 
     return ChatMessageResponse(
         id=assistant_msg.id,
