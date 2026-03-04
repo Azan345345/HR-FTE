@@ -153,12 +153,21 @@ async def _find_hr_contact_impl(
     hunter_found_anyone = False       # True if Hunter returned ≥1 contact
     resolved_domain: Optional[str] = company_domain or None
 
-    # ── 1. Hunter.io — single company-name call (HR + CEO + mgmt in one) ──
+    # ── 1. Hunter.io — prefer domain param when we have a real domain,
+    #    fall back to company-name search otherwise. Per Hunter docs,
+    #    "domain provides better results as it removes company name conversion."
     if settings.HUNTER_API_KEY:
         try:
-            contacts, hunter_domain = await _hunter_company_search(
-                company, settings.HUNTER_API_KEY
-            )
+            if company_domain and "." in company_domain:
+                # We have a real domain (from JSearch employer_website etc.)
+                contacts = await _hunter_domain_search(
+                    company_domain, settings.HUNTER_API_KEY, company=company
+                )
+                hunter_domain = company_domain
+            else:
+                contacts, hunter_domain = await _hunter_company_search(
+                    company, settings.HUNTER_API_KEY
+                )
             if contacts:
                 all_contacts.extend(contacts)
                 hunter_found_anyone = True
@@ -315,7 +324,7 @@ async def _hunter_company_search(
     params = {
         "company": company,
         "api_key": api_key,
-        "limit": 20,
+        "limit": 10,  # Free plan max is 10
     }
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -391,7 +400,7 @@ async def _hunter_domain_search(
     params = {
         "domain": domain,
         "api_key": api_key,
-        "limit": 20,
+        "limit": 10,  # Free plan max is 10
     }
     if department:
         params["department"] = department

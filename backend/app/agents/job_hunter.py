@@ -500,8 +500,19 @@ def _ensure_str(value) -> str:
 
 def _guess_domain(company: str) -> str:
     """Best-effort company domain guess for Hunter.io lookup."""
-    clean = re.sub(r"[^a-z0-9]", "", company.lower())
-    return f"{clean}.com" if clean else ""
+    if not company:
+        return ""
+    # Strip common suffixes that aren't in domain names
+    c = re.sub(r"\b(inc|llc|ltd|limited|corp|corporation|co|group|gmbh|pty|plc)\b\.?", "", company, flags=re.IGNORECASE)
+    # Keep hyphens between words (e.g. "Rolls-Royce" → "rolls-royce.com")
+    c = re.sub(r"[^a-z0-9\s-]", "", c.lower()).strip()
+    # Join words with nothing (most company domains) — e.g. "Adamantium Corp" → "adamantium"
+    parts = c.split()
+    if not parts:
+        return ""
+    # Single-word company → word.com; multi-word → try joined version
+    domain = "".join(parts)
+    return f"{domain}.com"
 
 
 # ── Job type normalisation ─────────────────────────────────────────────────────
@@ -583,6 +594,20 @@ async def _search_serpapi(
     jobs = []
     for item in results.get("jobs_results", []):
         company = item.get("company_name", "")
+        # Try to extract real domain from apply_options (company career pages)
+        domain = ""
+        for opt in (item.get("apply_options") or []):
+            link = opt.get("link", "")
+            # Skip job-board URLs; keep company career-page domains
+            if link and not any(jb in link for jb in (
+                "indeed.com", "linkedin.com", "glassdoor.com", "ziprecruiter.com",
+                "monster.com", "google.com", "lever.co", "greenhouse.io",
+                "workday.com", "smartrecruiters.com", "applytojob.com",
+            )):
+                domain = re.sub(r"^https?://(www\.)?", "", link).split("/")[0]
+                break
+        if not domain:
+            domain = _guess_domain(company)
         jobs.append({
             "title": item.get("title", ""),
             "company": company,
@@ -596,7 +621,7 @@ async def _search_serpapi(
             "requirements": [],
             "matching_skills": [],
             "missing_skills": [],
-            "company_domain": _guess_domain(company),
+            "company_domain": domain,
         })
     return jobs
 
@@ -643,6 +668,12 @@ async def _search_jsearch(
     jobs = []
     for item in data.get("data", []):
         company = item.get("employer_name", "")
+        # Use real employer_website when available (e.g. "https://www.google.com")
+        raw_website = item.get("employer_website") or ""
+        if raw_website:
+            domain = re.sub(r"^https?://(www\.)?", "", raw_website).strip("/")
+        else:
+            domain = _guess_domain(company)
         jobs.append({
             "title": item.get("job_title", ""),
             "company": company,
@@ -656,7 +687,7 @@ async def _search_jsearch(
             "requirements": item.get("job_required_skills") or [],
             "matching_skills": [],
             "missing_skills": [],
-            "company_domain": _guess_domain(company),
+            "company_domain": domain,
         })
     return jobs[:limit]
 

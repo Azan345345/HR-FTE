@@ -963,7 +963,7 @@ async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
                     company_domain=domain or None,
                     user_id=user_id,
                 ),
-                timeout=20,  # 20s per company — prevents runaway lookups
+                timeout=45,  # 45s per company — allows Hunter + SerpAPI + scraper
             )
 
             if result.get("hr_email"):
