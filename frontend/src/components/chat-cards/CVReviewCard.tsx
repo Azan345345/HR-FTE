@@ -76,6 +76,7 @@ interface CVReviewMeta {
 interface Props {
   metadata: CVReviewMeta;
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
 // ── AI change tracking ─────────────────────────────────────────────────────────
@@ -140,7 +141,7 @@ function AiBadge({ label = "AI" }: { label?: string }) {
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-export function CVReviewCard({ metadata, onSendAction }: Props) {
+export function CVReviewCard({ metadata, onSendAction, actionInFlight }: Props) {
   const {
     application_id, tailored_cv_id, job_id, job,
     tailored_cv, ats_score = 0, match_score = 0,
@@ -862,7 +863,8 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
       <div className="px-4 py-3 flex items-center gap-2">
         <Button
           size="sm"
-          className="flex-1 h-9 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
+          disabled={!!actionInFlight}
+          className="flex-1 h-9 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans disabled:opacity-50"
           onClick={() => onSendAction(`__APPROVE_CV__:${application_id}`)}
         >
           <CheckCircle size={13} />
@@ -880,7 +882,8 @@ export function CVReviewCard({ metadata, onSendAction }: Props) {
         <Button
           size="sm"
           variant="ghost"
-          className="h-9 text-[11px] font-sans text-slate-400 hover:text-rose-500 gap-1"
+          disabled={!!actionInFlight}
+          className="h-9 text-[11px] font-sans text-slate-400 hover:text-rose-500 gap-1 disabled:opacity-50"
           onClick={() => onSendAction(`__REGENERATE_CV__:${job_id || application_id}`)}
         >
           <RefreshCw size={11} />

@@ -14,9 +14,10 @@ interface CVImprovedMeta {
 interface Props {
   metadata: CVImprovedMeta;
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
-export function CVImprovedCard({ metadata, onSendAction }: Props) {
+export function CVImprovedCard({ metadata, onSendAction, actionInFlight }: Props) {
   // C5 fix: Null guards
   const tailored_cv_id = metadata?.tailored_cv_id ?? "";
   const name = metadata?.name;
@@ -89,7 +90,8 @@ export function CVImprovedCard({ metadata, onSendAction }: Props) {
         <Button
           size="sm"
           variant="outline"
-          className="flex-1 h-8 text-[12px] font-sans border-slate-200 text-slate-600 hover:text-slate-900 hover:border-slate-300 gap-1"
+          disabled={!!actionInFlight}
+          className="flex-1 h-8 text-[12px] font-sans border-slate-200 text-slate-600 hover:text-slate-900 hover:border-slate-300 gap-1 disabled:opacity-50"
           onClick={() => onSendAction(`__EDIT_CV__:${tailored_cv_id}:{}`)}
         >
           <Edit3 size={11} />

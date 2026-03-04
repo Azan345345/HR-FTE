@@ -20,6 +20,7 @@ interface InterviewReadyMeta {
 interface Props {
   metadata: InterviewReadyMeta;
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
 const ICON_MAP: Record<string, React.FC<any>> = {

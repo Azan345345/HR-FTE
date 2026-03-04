@@ -23,9 +23,10 @@ interface ApplicationSentMeta {
 interface Props {
   metadata: ApplicationSentMeta;
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
-export function ApplicationSentCard({ metadata, onSendAction }: Props) {
+export function ApplicationSentCard({ metadata, onSendAction, actionInFlight }: Props) {
   // C5 fix: Null guards for metadata fields
   const job = metadata?.job ?? { title: "Unknown", company: "Unknown" };
   const hr_email = metadata?.hr_email ?? "";
@@ -84,7 +85,8 @@ export function ApplicationSentCard({ metadata, onSendAction }: Props) {
         {interview_prep_available && job.id && (
           <Button
             size="sm"
-            className="w-full h-9 text-[12px] font-semibold bg-slate-800 hover:bg-slate-900 text-white gap-1.5 font-sans"
+            disabled={!!actionInFlight}
+            className="w-full h-9 text-[12px] font-semibold bg-slate-800 hover:bg-slate-900 text-white gap-1.5 font-sans disabled:opacity-50"
             onClick={() => onSendAction(`__PREP_INTERVIEW__:${job.id}`)}
           >
             <BookOpen size={12} />
@@ -94,7 +96,8 @@ export function ApplicationSentCard({ metadata, onSendAction }: Props) {
 
         {next_job_suggestion && (
           <button
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-slate-200 bg-white hover:border-rose-200 hover:bg-rose-50/30 transition-all text-left"
+            disabled={!!actionInFlight}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-slate-200 bg-white hover:border-rose-200 hover:bg-rose-50/30 transition-all text-left disabled:opacity-50 disabled:pointer-events-none"
             onClick={() => onSendAction(`__TAILOR_APPLY__:${next_job_suggestion.job_id}`)}
           >
             <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">

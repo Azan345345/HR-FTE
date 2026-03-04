@@ -29,6 +29,7 @@ interface JobResultsMeta {
 interface Props {
   metadata: JobResultsMeta;
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
 function MatchBadge({ score }: { score: number }) {
@@ -77,7 +78,7 @@ function HrBadge({ status }: { status: LiveHrStatus }) {
   );
 }
 
-export function JobResultsCard({ metadata, onSendAction }: Props) {
+export function JobResultsCard({ metadata, onSendAction, actionInFlight }: Props) {
   // C5/M4 fix: Null guard — prevent crash if metadata.jobs is null/undefined
   const jobs = metadata?.jobs ?? [];
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
@@ -223,7 +224,8 @@ export function JobResultsCard({ metadata, onSendAction }: Props) {
                       ) : (
                         <Button
                           size="sm"
-                          className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
+                          disabled={!!actionInFlight}
+                          className="flex-1 h-8 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans disabled:opacity-50"
                           onClick={() => onSendAction(`__TAILOR_APPLY__:${job.id}`)}
                         >
                           <Briefcase size={12} />

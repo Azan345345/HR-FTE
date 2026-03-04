@@ -621,7 +621,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const [inputValue, setInputValue] = useState("");
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isSending, setIsSending] = useState(false);
+  const [isSending, setIsSending] = useState(false);       // gates text input only
+  const [actionInFlight, setActionInFlight] = useState<string | null>(null); // tracks which card action is running
   const [isUploading, setIsUploading] = useState(false);
 
   // Slash command menu state
@@ -665,6 +666,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     setSlashMenuOpen(false);
     setSlashQuery("");
     setIsSending(false);
+    setActionInFlight(null);
 
     if (activeSessionId) {
       setMessages([]);
@@ -777,11 +779,16 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   };
 
   const sendAction = async (action: string) => {
-    setIsSending(true);
+    // Card actions run independently — they do NOT block the chat input or other actions.
+    // Each action is tracked by actionInFlight so the originating card can show a spinner.
+    const actionId = action.split(":")[0]; // e.g. "__APPROVE_CV__"
+    setActionInFlight(actionId);
 
     const controller = new AbortController();
     const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
-    abortRef.current = { controller, sessionId: targetSessionId };
+    // Only set abortRef if no main chat request is in flight (don't stomp handleSend's controller)
+    const ownAbort = !abortRef.current;
+    if (ownAbort) abortRef.current = { controller, sessionId: targetSessionId };
 
     try {
       const resp = await sendChatMessage(action, targetSessionId, undefined, controller.signal);
@@ -806,7 +813,6 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     } catch (err) {
       if (err instanceof AbortedError) {
         // "Stopped" is persisted to DB by the session-switch effect — no local bubble needed
-        // since the user already left this conversation
       } else {
         setMessages((prev) => [
           ...prev,
@@ -819,8 +825,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         ]);
       }
     } finally {
-      setIsSending(false);
-      if (abortRef.current?.controller === controller) abortRef.current = null;
+      setActionInFlight(null);
+      if (ownAbort && abortRef.current?.controller === controller) abortRef.current = null;
     }
   };
 
@@ -887,14 +893,14 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     const meta = msg.metadata;
     if (!meta || !meta.type) return null;
     switch (meta.type) {
-      case "job_results":     return <JobResultsCard metadata={meta as any} onSendAction={sendAction} />;
-      case "cv_review":       return <CVReviewCard metadata={meta as any} onSendAction={sendAction} />;
-      case "email_review":    return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} />;
-      case "application_sent":return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} />;
-      case "interview_ready":          return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} />;
-      case "cv_selection":             return <CVSelectionCard metadata={meta as any} onSendAction={sendAction} />;
-      case "cv_improvements_suggested":return <CVImprovementActionCard onSendAction={sendAction} />;
-      case "cv_improved":              return <CVImprovedCard metadata={meta as any} onSendAction={sendAction} />;
+      case "job_results":     return <JobResultsCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "cv_review":       return <CVReviewCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "email_review":    return <EmailReviewCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "application_sent":return <ApplicationSentCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "interview_ready":          return <InterviewPrepCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "cv_selection":             return <CVSelectionCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "cv_improvements_suggested":return <CVImprovementActionCard onSendAction={sendAction} actionInFlight={actionInFlight} />;
+      case "cv_improved":              return <CVImprovedCard metadata={meta as any} onSendAction={sendAction} actionInFlight={actionInFlight} />;
       default: return null;
     }
   }
@@ -1020,7 +1026,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         </AnimatePresence>
 
         {/* Generic thinking indicator — only when NOT actively streaming jobs */}
-        {(isSending || isUploading) && !jobStream?.active && !hrProcessing && <ThinkingBubble />}
+        {(isSending || isUploading || actionInFlight) && !jobStream?.active && !hrProcessing && <ThinkingBubble />}
 
         <div ref={chatEndRef} />
       </div>

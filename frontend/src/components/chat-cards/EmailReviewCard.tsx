@@ -33,6 +33,7 @@ interface EmailReviewMeta {
 interface Props {
   metadata: EmailReviewMeta;
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
 // ── Line-level diff ────────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ function countChangedLines(diff: DiffLine[]): number {
   return diff.filter(l => l.status !== "unchanged").length;
 }
 
-export function EmailReviewCard({ metadata, onSendAction }: Props) {
+export function EmailReviewCard({ metadata, onSendAction, actionInFlight }: Props) {
   const { application_id, hr_contact, email, pdf_filename } = metadata;
 
   const [editOpen, setEditOpen] = useState(false);
@@ -351,7 +352,8 @@ export function EmailReviewCard({ metadata, onSendAction }: Props) {
       <div className="px-4 py-3 flex items-center gap-2">
         <Button
           size="sm"
-          className="flex-1 h-9 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans"
+          disabled={!!actionInFlight}
+          className="flex-1 h-9 text-[12px] font-semibold bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-sans disabled:opacity-50"
           onClick={() => onSendAction(`__SEND_EMAIL__:${application_id}`)}
         >
           <Send size={12} />

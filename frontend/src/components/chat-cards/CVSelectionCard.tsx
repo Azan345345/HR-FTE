@@ -17,9 +17,10 @@ interface CVSelectionCardProps {
     cvs: CV[];
   };
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
-export function CVSelectionCard({ metadata, onSendAction }: CVSelectionCardProps) {
+export function CVSelectionCard({ metadata, onSendAction, actionInFlight }: CVSelectionCardProps) {
   // C5 fix: Null guards
   const cvs = metadata?.cvs ?? [];
   const pending_intent = metadata?.pending_intent ?? "";
@@ -69,7 +70,7 @@ export function CVSelectionCard({ metadata, onSendAction }: CVSelectionCardProps
               onClick={() => handleSelect(cv.id)}
               onMouseEnter={() => setHoveredId(cv.id)}
               onMouseLeave={() => setHoveredId(null)}
-              disabled={!!selectedId}
+              disabled={!!selectedId || !!actionInFlight}
               className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all text-left
                 ${isSelected
                   ? "border-rose-400 bg-rose-50"

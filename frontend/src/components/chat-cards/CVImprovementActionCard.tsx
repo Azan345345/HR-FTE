@@ -4,9 +4,10 @@ import { motion } from "framer-motion";
 
 interface Props {
   onSendAction: (action: string) => void;
+  actionInFlight?: string | null;
 }
 
-export function CVImprovementActionCard({ onSendAction }: Props) {
+export function CVImprovementActionCard({ onSendAction, actionInFlight }: Props) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -19,7 +20,8 @@ export function CVImprovementActionCard({ onSendAction }: Props) {
       </p>
       <Button
         size="sm"
-        className="w-full h-8 text-[12px] font-semibold bg-violet-600 hover:bg-violet-700 text-white gap-1.5 font-sans"
+        disabled={!!actionInFlight}
+        className="w-full h-8 text-[12px] font-semibold bg-violet-600 hover:bg-violet-700 text-white gap-1.5 font-sans disabled:opacity-50"
         onClick={() => onSendAction("__APPLY_CV_IMPROVEMENTS__")}
       >
         <Wand2 size={12} />
