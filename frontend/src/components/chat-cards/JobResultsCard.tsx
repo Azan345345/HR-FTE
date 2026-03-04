@@ -98,9 +98,12 @@ export function JobResultsCard({ metadata, onSendAction, actionInFlight }: Props
     const key = `${safeCompany}|${safeTitle}`;
     const result = hrResults[key];
     if (result) return result.status;
-    // Not received a ws event yet
     if (hrSearchDone) return "not_found"; // search finished, no contact found
-    return "pending"; // still waiting for search to reach this job
+    // No live WS data — use stored metadata from DB (historical conversation)
+    if (Object.keys(hrResults).length === 0) {
+      return job.hr_found ? "found" : "not_found";
+    }
+    return "pending"; // live search in progress, waiting for this job
   };
 
   return (

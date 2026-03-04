@@ -624,6 +624,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   const [isSending, setIsSending] = useState(false);       // gates text input only
   const [actionInFlight, setActionInFlight] = useState<string | null>(null); // tracks which card action is running
   const [isUploading, setIsUploading] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   // Slash command menu state
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
@@ -670,7 +671,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
     if (activeSessionId) {
       setMessages([]);
-      setIsSending(true);
+      setIsLoadingHistory(true);
       getChatHistory(activeSessionId)
         .then((data) => {
           const formattedMessages: ChatMessage[] = data.messages
@@ -685,9 +686,9 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
                 : "Now",
             }));
           setMessages(formattedMessages);
-          setIsSending(false);
         })
-        .catch(() => setIsSending(false));
+        .catch(() => {})
+        .finally(() => setIsLoadingHistory(false));
     } else {
       setMessages([]);
     }
@@ -925,7 +926,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
         style={{ background: "linear-gradient(180deg, #f8fafc 0%, #ffffff 60%)" }}
       >
         {/* Empty State */}
-        {messages.length === 0 && !isSending && (
+        {messages.length === 0 && !isSending && !isLoadingHistory && (
           <motion.div
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
