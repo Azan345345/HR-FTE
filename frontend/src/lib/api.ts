@@ -2,6 +2,9 @@
 // Vercel prod proxy handles /api → Railway backend (vercel.json rewrites).
 const API_BASE = "";
 
+// Clear the 401 redirect guard on page load so future expiries can redirect again
+sessionStorage.removeItem("auth_redirect");
+
 interface FetchOptions extends RequestInit {
     token?: string;
 }
@@ -43,11 +46,15 @@ export async function api<T>(endpoint: string, options: FetchOptions = {}): Prom
     }
 
     if (!response.ok) {
-        // C4 fix: Handle 401 token expiry — redirect to login
+        // C4 fix: Handle 401 token expiry — clear auth and let React show login
         if (response.status === 401) {
-            localStorage.removeItem("token");
-            localStorage.removeItem("user");
-            window.location.href = "/";
+            // Clear the Zustand persisted auth store (key: "digital-fte-auth")
+            localStorage.removeItem("digital-fte-auth");
+            // Force a single reload so Zustand rehydrates as logged-out
+            if (!sessionStorage.getItem("auth_redirect")) {
+                sessionStorage.setItem("auth_redirect", "1");
+                window.location.href = "/";
+            }
             throw new Error("Session expired. Please log in again.");
         }
         const error = await response.json().catch(() => ({ detail: "Unknown error" }));

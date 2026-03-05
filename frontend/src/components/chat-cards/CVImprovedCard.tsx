@@ -32,9 +32,11 @@ export function CVImprovedCard({ metadata, onSendAction, actionInFlight }: Props
       if (!res.ok) {
         // L12 fix: Handle 401 with redirect instead of stale token error
         if (res.status === 401) {
-          localStorage.removeItem("token");
-          localStorage.removeItem("user");
-          window.location.href = "/";
+          localStorage.removeItem("digital-fte-auth");
+          if (!sessionStorage.getItem("auth_redirect")) {
+            sessionStorage.setItem("auth_redirect", "1");
+            window.location.href = "/";
+          }
           return;
         }
         const errBody = await res.json().catch(() => null);
