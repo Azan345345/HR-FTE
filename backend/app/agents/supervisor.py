@@ -2090,12 +2090,17 @@ async def _handle_send_email(
                 None,
             )
     else:
-        # No credentials at all — mock send
-        is_mock = True
-        sent_ok = True
-        gmail_message_id = f"mock_{app_id[:8]}"
-        await _log_execution(db, user_id, app_id, "email_sender", f"mock_send:{hr_email}",
-                             "success", int((time.monotonic() - _t_send) * 1000))
+        # No Gmail credentials — tell user to connect first
+        await event_bus.emit_agent_completed(user_id, "email_sender", "Gmail not connected")
+        return (
+            "**Gmail is not connected.** I can't send the email without access to your Gmail account.\n\n"
+            "Please connect your Gmail first:\n\n"
+            "1. Go to **Settings** (bottom-left) → **Data Sources**\n"
+            "2. Click **Connect Gmail** and authorize access\n"
+            "3. Come back here and click **Send via Gmail** again\n\n"
+            "Your application email and CV are saved — nothing will be lost.",
+            None,
+        )
 
     # Update application
     if sent_ok:
