@@ -2003,7 +2003,7 @@ async def _handle_send_email(
     else:
         logger.warning("pdf_no_cv_data_available", app_id=app_id)
 
-    # Try Gmail integration — check DB (service_name="google") OR env fallback
+    # Try Gmail integration — only use the user's own connected Gmail
     from app.config import settings as app_settings
     gmail_tokens: dict = {}
 
@@ -2019,14 +2019,6 @@ async def _handle_send_email(
         gmail_tokens = {
             "access_token": integration.access_token,
             "refresh_token": integration.refresh_token,
-            "client_id": app_settings.GOOGLE_OAUTH_CLIENT_ID,
-            "client_secret": app_settings.GOOGLE_OAUTH_CLIENT_SECRET,
-        }
-    elif app_settings.GOOGLE_REFRESH_TOKEN:
-        # Fall back to env-level credentials (GOOGLE_REFRESH_TOKEN in .env)
-        gmail_tokens = {
-            "access_token": None,
-            "refresh_token": app_settings.GOOGLE_REFRESH_TOKEN,
             "client_id": app_settings.GOOGLE_OAUTH_CLIENT_ID,
             "client_secret": app_settings.GOOGLE_OAUTH_CLIENT_SECRET,
         }
