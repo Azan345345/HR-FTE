@@ -91,13 +91,23 @@ async def search_jobs(
     job_type: Optional[str] = None,
     limit: int = 10,
     cv_data: Optional[dict] = None,
+    country_code: Optional[str] = None,
+    skip_llm_parse: bool = False,
 ) -> list[dict]:
     """Search for jobs using all available APIs, deduplicate, score, and return."""
     await event_bus.emit_agent_started(user_id, "job_hunter", f"Searching jobs: {query}")
 
-    # 1. Parse natural-language query into structured params
-    llm = get_llm(task="search_query_parsing")
-    parse_prompt = f"""Analyze this job search request: "{query}"
+    if skip_llm_parse:
+        # Caller already parsed the query — use pre-parsed values directly
+        search_title = query
+        search_location = location
+        country_code = _infer_country_code(search_location, country_code)
+        country_name = None
+        job_type = _normalize_job_type(job_type)
+    else:
+        # 1. Parse natural-language query into structured params via LLM
+        llm = get_llm(task="search_query_parsing")
+        parse_prompt = f"""Analyze this job search request: "{query}"
 
 Extract:
 1. Clean job title/keywords (without location or employment type)
@@ -110,66 +120,25 @@ Return JSON: {{"title":"...","location":"...","country":"...","country_code":"..
 If no location specified use null. If no job type specified use null.
 Return ONLY JSON."""
 
-    try:
-        resp = await llm.ainvoke(parse_prompt)
-        content = resp.content if hasattr(resp, "content") else str(resp)
-        parsed = json.loads(content.strip().replace("```json", "").replace("```", ""))
-        search_title = parsed.get("title", query)
-        search_location = location or parsed.get("location")
-        country_code = (parsed.get("country_code") or "us").lower()
-        country_name = parsed.get("country")
-        # Caller-supplied job_type wins; fall back to LLM-extracted value
-        job_type = _normalize_job_type(job_type) or _normalize_job_type(parsed.get("job_type"))
+        try:
+            resp = await llm.ainvoke(parse_prompt)
+            content = resp.content if hasattr(resp, "content") else str(resp)
+            parsed = json.loads(content.strip().replace("```json", "").replace("```", ""))
+            search_title = parsed.get("title", query)
+            search_location = location or parsed.get("location")
+            country_code = (parsed.get("country_code") or "us").lower()
+            country_name = parsed.get("country")
+            # Caller-supplied job_type wins; fall back to LLM-extracted value
+            job_type = _normalize_job_type(job_type) or _normalize_job_type(parsed.get("job_type"))
 
-        # Quick city/country → ISO code mapping (supplements LLM extraction)
-        if search_location:
-            loc = search_location.lower()
-            if any(k in loc for k in ("london", " uk", "england", "britain", "scotland", "wales")):
-                country_code = "gb"
-            elif any(k in loc for k in ("sydney", "melbourne", "brisbane", "australia")):
-                country_code = "au"
-            elif "paris" in loc or "france" in loc:
-                country_code = "fr"
-            elif "berlin" in loc or "germany" in loc or "munich" in loc or "frankfurt" in loc:
-                country_code = "de"
-            elif "toronto" in loc or "vancouver" in loc or "canada" in loc:
-                country_code = "ca"
-            elif any(k in loc for k in ("india", "delhi", "bangalore", "mumbai", "hyderabad")):
-                country_code = "in"
-            elif any(k in loc for k in ("dubai", "uae", "emirates", "abu dhabi")):
-                country_code = "ae"
-            elif any(k in loc for k in ("karachi", "lahore", "islamabad", "pakistan")):
-                country_code = "pk"
-            elif any(k in loc for k in ("finland", "helsinki", "tampere", "espoo")):
-                country_code = "fi"
-            elif any(k in loc for k in ("norway", "oslo", "bergen", "trondheim")):
-                country_code = "no"
-            elif any(k in loc for k in ("sweden", "stockholm", "gothenburg", "malmö", "malmo")):
-                country_code = "se"
-            elif any(k in loc for k in ("denmark", "copenhagen", "aarhus")):
-                country_code = "dk"
-            elif any(k in loc for k in ("netherlands", "amsterdam", "rotterdam", "hague")):
-                country_code = "nl"
-            elif any(k in loc for k in ("amsterdam", "netherlands")):
-                country_code = "nl"
-            elif any(k in loc for k in ("switzerland", "zurich", "geneva", "bern")):
-                country_code = "ch"
-            elif any(k in loc for k in ("austria", "vienna", "graz")):
-                country_code = "at"
-            elif any(k in loc for k in ("singapore")):
-                country_code = "sg"
-            elif any(k in loc for k in ("poland", "warsaw", "krakow")):
-                country_code = "pl"
-            elif any(k in loc for k in ("spain", "madrid", "barcelona")):
-                country_code = "es"
-            elif any(k in loc for k in ("italy", "rome", "milan")):
-                country_code = "it"
-    except Exception:
-        search_title = query
-        search_location = location
-        country_code = "us"
-        country_name = None
-        job_type = _normalize_job_type(job_type)
+            # Refine country_code with deterministic mapping
+            country_code = _infer_country_code(search_location, country_code)
+        except Exception:
+            search_title = query
+            search_location = location
+            country_code = "us"
+            country_name = None
+            job_type = _normalize_job_type(job_type)
 
     all_jobs: list[dict] = []
     sources_tried: list[str] = []
@@ -588,6 +557,52 @@ def _normalize_job_type(job_type: Optional[str]) -> Optional[str]:
     if not job_type:
         return None
     return _JOB_TYPE_ALIASES.get(job_type.lower().strip())
+
+
+def _infer_country_code(location: str, fallback: Optional[str] = None) -> str:
+    """Map a location string to an ISO 3166-1 alpha-2 country code."""
+    if not location:
+        return fallback or "us"
+    loc = location.lower()
+    if any(k in loc for k in ("london", " uk", "england", "britain", "scotland", "wales")):
+        return "gb"
+    elif any(k in loc for k in ("sydney", "melbourne", "brisbane", "australia")):
+        return "au"
+    elif "paris" in loc or "france" in loc:
+        return "fr"
+    elif "berlin" in loc or "germany" in loc or "munich" in loc or "frankfurt" in loc:
+        return "de"
+    elif "toronto" in loc or "vancouver" in loc or "canada" in loc:
+        return "ca"
+    elif any(k in loc for k in ("india", "delhi", "bangalore", "mumbai", "hyderabad")):
+        return "in"
+    elif any(k in loc for k in ("dubai", "uae", "emirates", "abu dhabi")):
+        return "ae"
+    elif any(k in loc for k in ("karachi", "lahore", "islamabad", "pakistan")):
+        return "pk"
+    elif any(k in loc for k in ("finland", "helsinki", "tampere", "espoo")):
+        return "fi"
+    elif any(k in loc for k in ("norway", "oslo", "bergen", "trondheim")):
+        return "no"
+    elif any(k in loc for k in ("sweden", "stockholm", "gothenburg", "malmö", "malmo")):
+        return "se"
+    elif any(k in loc for k in ("denmark", "copenhagen", "aarhus")):
+        return "dk"
+    elif any(k in loc for k in ("netherlands", "amsterdam", "rotterdam", "hague")):
+        return "nl"
+    elif any(k in loc for k in ("switzerland", "zurich", "geneva", "bern")):
+        return "ch"
+    elif any(k in loc for k in ("austria", "vienna", "graz")):
+        return "at"
+    elif any(k in loc for k in ("singapore",)):
+        return "sg"
+    elif any(k in loc for k in ("poland", "warsaw", "krakow")):
+        return "pl"
+    elif any(k in loc for k in ("spain", "madrid", "barcelona")):
+        return "es"
+    elif any(k in loc for k in ("italy", "rome", "milan")):
+        return "it"
+    return fallback or "us"
 
 
 # ── SerpAPI Google Jobs ───────────────────────────────────────────────────────

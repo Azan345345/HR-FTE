@@ -776,7 +776,9 @@ Return JSON:
 {{
   "query": "job title/role only — no location or employment type",
   "location": "city, region or country — or null",
-  "job_type": "one of: fulltime, parttime, contract, temporary, internship, remote, hybrid — or null"
+  "job_type": "one of: fulltime, parttime, contract, temporary, internship, remote, hybrid — or null",
+  "count": "number of jobs requested as an integer — or null if not specified",
+  "country_code": "ISO 3166-1 alpha-2 code (e.g. us, gb, pk, de, in, ae) — or null"
 }}
 Return ONLY valid JSON."""
 
@@ -796,6 +798,26 @@ Return ONLY valid JSON."""
     search_query = params.get("query", message) or message
     location = params.get("location")
     job_type = params.get("job_type")
+    country_code = (params.get("country_code") or "").lower() or None
+    from app.agents.job_hunter import _infer_country_code
+    if location:
+        country_code = _infer_country_code(location, country_code)
+    if not country_code:
+        country_code = "us"
+
+    # Compute limit: caller override > LLM-extracted count > default 10
+    if limit != 5:  # caller explicitly passed a limit (e.g., auto pipeline)
+        computed_limit = min(limit * 2, 15)
+    else:
+        raw_count = params.get("count")
+        if raw_count is not None:
+            try:
+                requested = int(raw_count)
+                computed_limit = min(requested * 2, 15)
+            except (ValueError, TypeError):
+                computed_limit = 10
+        else:
+            computed_limit = 10  # default when user doesn't specify
 
     await event_bus.emit_agent_progress(user_id, "job_hunter", 1, 3, f"Searching for: {search_query}", location or "any location")
 
@@ -812,15 +834,15 @@ Return ONLY valid JSON."""
     cv_id = cv.id if cv else None
     cv_parsed_data = cv.parsed_data if cv else None
 
-    # Always fetch broadly (20 per source) — user sees ALL unique results, not a
-    # truncated subset. HR lookup runs on ALL found jobs.
     jobs = await search_jobs(
         query=search_query,
         user_id=user_id,
         location=location,
         job_type=job_type,
-        limit=20,
+        limit=computed_limit,
         cv_data=cv_parsed_data,
+        country_code=country_code,
+        skip_llm_parse=True,
     )
 
     if not jobs:
@@ -948,6 +970,8 @@ Return ONLY valid JSON."""
         "search_id": search_id,
         "jobs": saved_jobs,
         "selected_cv_id": selected_cv_id or cv_id,   # remembered for tailor step
+        "search_query": search_query,
+        "search_location": location,
     })
 
 
@@ -1263,29 +1287,10 @@ async def _handle_auto_pipeline(
     and clicks 'Tailor CV & Apply' — the full approval flow (CV review →
     email review → send) is triggered per-job, never auto-approved.
     """
-    llm = get_llm(task="parse_automation_query")
-    prompt = f"""Extract job search parameters from this message: "{message}"
-Return JSON: {{"count": 5, "location": "city/country or null", "query": "job title or role"}}
-Return ONLY valid JSON, nothing else."""
-
-    try:
-        resp = await llm.ainvoke(prompt)
-        content = resp.content if hasattr(resp, "content") else str(resp)
-        params = json.loads(content.strip().replace("```json", "").replace("```", ""))
-    except Exception:
-        params = {"count": 5, "location": None, "query": message}
-
-    count = min(int(params.get("count") or 5), 8)
-    location = params.get("location")
-    query = params.get("query") or message
-
     await event_bus.emit_workflow_update(user_id, "supervisor", [], ["job_hunter", "hr_finder"])
 
-    # Pass the FULL original message so _handle_job_search_v2 can extract location
-    # from context. Passing only `query` (title-only) strips the location and causes
-    # jobs from the wrong country/region to be returned.
     text, search_meta = await _handle_job_search_v2(
-        user_id, session_id or "", message, db, limit=count
+        user_id, session_id or "", message, db
     )
 
     if not search_meta:
@@ -1295,6 +1300,8 @@ Return ONLY valid JSON, nothing else."""
     if not jobs:
         return ("No jobs were found for that query. Try different keywords.", None)
 
+    query = search_meta.get("search_query", "your criteria")
+    location = search_meta.get("search_location")
     location_str = f" in **{location}**" if location else ""
     response_text = (
         f"Found **{len(jobs)} positions** for \"{query}\"{location_str}. "
