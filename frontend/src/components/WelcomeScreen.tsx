@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, Mail, Lock, Loader2, CheckCircle } from "lucide-react";
+import { ArrowRight, Mail, Lock, Loader2, CheckCircle, User } from "lucide-react";
 import { useAuthStore } from "@/hooks/useAuth";
 import { forgotPassword } from "@/services/api";
 
 const GREETING_WORDS = "Sign in to CareerAgent".split(" ");
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface WelcomeScreenProps {
   onSubmit: () => void;
@@ -12,6 +14,7 @@ interface WelcomeScreenProps {
 }
 
 export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLogin, setIsLogin] = useState(true);
@@ -19,6 +22,8 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotLoading, setForgotLoading] = useState(false);
   const [forgotError, setForgotError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<{ name?: string; email?: string; password?: string }>({});
+  const [touched, setTouched] = useState<{ name?: boolean; email?: boolean; password?: boolean }>({});
 
   const emailRef = useRef<HTMLInputElement>(null);
 
@@ -44,15 +49,33 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
     return () => clearTimeout(timer);
   }, []);
 
+  const validate = (): { name?: string; email?: string; password?: string } => {
+    const errs: { name?: string; email?: string; password?: string } = {};
+    if (!isLogin && !name.trim()) errs.name = "Name is required";
+    if (!email.trim()) errs.email = "Email is required";
+    else if (!EMAIL_RE.test(email.trim())) errs.email = "Enter a valid email address";
+    if (!password.trim()) errs.password = "Password is required";
+    else if (!isLogin && password.length < 6) errs.password = "Password must be at least 6 characters";
+    return errs;
+  };
+
+  const handleBlur = (field: "name" | "email" | "password") => {
+    setTouched((t) => ({ ...t, [field]: true }));
+    setFieldErrors(validate());
+  };
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!email.trim() || !password.trim()) return;
+    const errs = validate();
+    setFieldErrors(errs);
+    setTouched({ name: true, email: true, password: true });
+    if (Object.keys(errs).length > 0) return;
 
     try {
       if (isLogin) {
-        await login(email, password);
+        await login(email.trim(), password);
       } else {
-        await signup(email.split("@")[0], email, password);
+        await signup(name.trim(), email.trim(), password);
       }
       onSubmit();
     } catch (err) {
@@ -248,31 +271,61 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
             boxShadow: "0 8px 40px -8px rgba(0,0,0,0.12), 0 2px 8px -2px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.9)",
           }}
         >
+          {/* Name input (signup only) */}
+          {!isLogin && (
+            <div>
+              <div className={`h-12 bg-white/70 border rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white ${touched.name && fieldErrors.name ? "border-red-400" : "border-black/[0.09]"}`}>
+                <User size={15} className="text-slate-400 flex-shrink-0" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => { setName(e.target.value); clearError(); if (touched.name) setFieldErrors(validate()); }}
+                  onBlur={() => handleBlur("name")}
+                  placeholder="Full name"
+                  className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
+                />
+              </div>
+              {touched.name && fieldErrors.name && (
+                <p className="text-[11px] text-red-500 mt-1 ml-1">{fieldErrors.name}</p>
+              )}
+            </div>
+          )}
+
           {/* Email input */}
-          <div className="h-12 bg-white/70 border border-black/[0.09] rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white">
-            <Mail size={15} className="text-slate-400 flex-shrink-0" />
-            <input
-              ref={emailRef}
-              type="email"
-              value={email}
-              onChange={(e) => { setEmail(e.target.value); clearError(); }}
-              placeholder="Email address"
-              className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
-              required
-            />
+          <div>
+            <div className={`h-12 bg-white/70 border rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white ${touched.email && fieldErrors.email ? "border-red-400" : "border-black/[0.09]"}`}>
+              <Mail size={15} className="text-slate-400 flex-shrink-0" />
+              <input
+                ref={emailRef}
+                type="email"
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); clearError(); if (touched.email) setFieldErrors(validate()); }}
+                onBlur={() => handleBlur("email")}
+                placeholder="Email address"
+                className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
+              />
+            </div>
+            {touched.email && fieldErrors.email && (
+              <p className="text-[11px] text-red-500 mt-1 ml-1">{fieldErrors.email}</p>
+            )}
           </div>
 
           {/* Password input */}
-          <div className="h-12 bg-white/70 border border-black/[0.09] rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white">
-            <Lock size={15} className="text-slate-400 flex-shrink-0" />
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); clearError(); }}
-              placeholder="Password"
-              className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
-              required
-            />
+          <div>
+            <div className={`h-12 bg-white/70 border rounded-xl flex items-center px-4 gap-3 transition-all duration-200 focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10 focus-within:bg-white ${touched.password && fieldErrors.password ? "border-red-400" : "border-black/[0.09]"}`}>
+              <Lock size={15} className="text-slate-400 flex-shrink-0" />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); clearError(); if (touched.password) setFieldErrors(validate()); }}
+                onBlur={() => handleBlur("password")}
+                placeholder={isLogin ? "Password" : "Password (min 6 characters)"}
+                className="flex-1 bg-transparent border-none outline-none text-[14px] font-sans text-foreground placeholder:text-slate-400 caret-primary"
+              />
+            </div>
+            {touched.password && fieldErrors.password && (
+              <p className="text-[11px] text-red-500 mt-1 ml-1">{fieldErrors.password}</p>
+            )}
           </div>
 
           {/* Forgot password */}
@@ -291,7 +344,7 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
           {/* Submit */}
           <button
             type="submit"
-            disabled={!email.trim() || !password.trim() || isLoading}
+            disabled={isLoading}
             className="h-12 mt-1 rounded-xl flex items-center justify-center gap-2 transition-all duration-200 disabled:opacity-40 disabled:pointer-events-none bg-primary text-white hover:brightness-110 active:scale-[0.98]"
             style={{ boxShadow: "var(--shadow-brand-sm)" }}
           >
@@ -307,7 +360,7 @@ export const WelcomeScreen = ({ onSubmit, isExiting }: WelcomeScreenProps) => {
           <div className="text-center mt-1">
             <button
               type="button"
-              onClick={() => { setIsLogin(!isLogin); clearError(); }}
+              onClick={() => { setIsLogin(!isLogin); clearError(); setFieldErrors({}); setTouched({}); }}
               className="text-[12px] text-slate-500 hover:text-primary transition-colors font-medium"
             >
               {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
