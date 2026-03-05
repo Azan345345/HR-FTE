@@ -22,6 +22,20 @@ logger = structlog.get_logger()
 # asyncio.create_task() results before they complete (Python 3.10+ documented issue).
 _background_tasks: set = set()
 
+# Track background tasks per user so they can be cancelled on conversation stop.
+_user_bg_tasks: dict[str, list] = {}
+
+
+def cancel_user_tasks(user_id: str) -> int:
+    """Cancel all background tasks for a user. Returns number cancelled."""
+    tasks = _user_bg_tasks.pop(user_id, [])
+    cancelled = 0
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+            cancelled += 1
+    return cancelled
+
 
 def _ensure_str(value) -> str:
     """Coerce a value to a string. Handles lists like ['Full-time'] → 'Full-time'."""
@@ -915,6 +929,8 @@ Return ONLY valid JSON."""
     _task = asyncio.create_task(_bg_hr_lookup(user_id, job_entries_for_hr))
     _background_tasks.add(_task)
     _task.add_done_callback(_background_tasks.discard)
+    # Also track per-user so cancel_user_tasks() can stop it on conversation switch
+    _user_bg_tasks.setdefault(user_id, []).append(_task)
 
     await event_bus.emit_agent_completed(user_id, "job_hunter", f"Found {len(saved_jobs)} positions — searching HR contacts in background")
     await event_bus.emit_workflow_update(user_id, "job_hunter", ["job_hunter"], ["hr_finder", "cv_tailor", "email_sender"])

@@ -1,6 +1,7 @@
 """Chat interface routes — send messages, get history."""
 
 import uuid
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
@@ -21,6 +22,9 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 # When /chat/stop is called, the session is added here so that the
 # still-running /chat/send handler knows to skip saving its response.
 _stopped_sessions: set[str] = set()
+
+# Track running asyncio tasks per session so /chat/stop can cancel them.
+_running_tasks: dict[str, asyncio.Task] = {}
 
 
 @router.post("/send", response_model=ChatMessageResponse)
@@ -58,22 +62,32 @@ async def send_message(
         raise HTTPException(status_code=500, detail=f"Failed to save message: {str(e)}")
 
     # Process through supervisor agent — returns (text, metadata)
+    # Wrap in a tracked asyncio task so /chat/stop can cancel it.
     response_text = "I'm sorry, I encountered an error. Please try again."
     response_metadata = None
     try:
         from app.agents.supervisor import process_chat_message
-        result = await process_chat_message(
-            user_id=user_id,
-            session_id=session_id,
-            message=safe_message,
-            db=db,
-            pipeline=body.pipeline,
-        )
+
+        # Register the current request task so /chat/stop can cancel it
+        _running_tasks[session_id] = asyncio.current_task()
+        try:
+            result = await process_chat_message(
+                user_id=user_id,
+                session_id=session_id,
+                message=safe_message,
+                db=db,
+                pipeline=body.pipeline,
+            )
+        finally:
+            _running_tasks.pop(session_id, None)
+
         # Supervisor now returns a tuple (text, metadata)
         if isinstance(result, tuple):
             response_text, response_metadata = result
         else:
             response_text = result
+    except asyncio.CancelledError:
+        response_text = "⏹ **Stopped** — the request was cancelled."
     except Exception as e:
         response_text = f"I'm sorry, I encountered an error: {str(e)}. Please try again."
 
@@ -292,6 +306,15 @@ async def stop_conversation(
 
     # Mark session as stopped so the still-running /chat/send skips its save
     _stopped_sessions.add(session_id)
+
+    # Cancel the running agent task for this session
+    running_task = _running_tasks.pop(session_id, None)
+    if running_task and not running_task.done():
+        running_task.cancel()
+
+    # Cancel any background tasks (HR lookups, etc.) for this user
+    from app.agents.supervisor import cancel_user_tasks
+    cancel_user_tasks(user_id)
 
     try:
         stopped_msg = ChatMessage(
