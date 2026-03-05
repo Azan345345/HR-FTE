@@ -1911,7 +1911,7 @@ async def _handle_send_email(
     job_result = await db.execute(select(Job).where(Job.id == application.job_id))
     job = job_result.scalar_one_or_none()
 
-    # Load HR contact — re-run finder if stale/low-confidence (old LLM-fabricated records)
+    # Load HR contact — only re-run finder if email is genuinely missing or source is fabricated
     from app.agents.hr_finder import find_hr_contact as _find_hr
     hr_email = ""
     hr_name = "HR Team"
@@ -1926,11 +1926,12 @@ async def _handle_send_email(
             hr_email = hr_record.hr_email or ""
             hr_name = hr_record.hr_name or hr_name
 
-    # Stale check: re-run finder if email is empty OR came from LLM guess (confidence < 0.5)
-    stale_sources = {"guess", "constructed", "not_found", "llm", None}
-    confidence = getattr(hr_record, "confidence_score", 0) or 0
+    # Only re-lookup if email is empty or source is explicitly fabricated/missing.
+    # Real API sources (hunter_*, pattern_*, prospeo, apify, etc.) should NOT trigger re-lookup
+    # even with low confidence — the background pre-filter already found the best available result.
+    _fabricated_sources = {"guess", "constructed", "not_found", "llm"}
     source = getattr(hr_record, "source", None)
-    needs_refresh = not hr_email or source in stale_sources or confidence < 0.5
+    needs_refresh = not hr_email or source in _fabricated_sources
 
     if needs_refresh and job:
         await event_bus.emit_agent_started(user_id, "hr_finder", f"Re-finding HR contact for {job.company}")
