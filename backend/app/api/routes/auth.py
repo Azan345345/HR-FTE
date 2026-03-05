@@ -7,10 +7,14 @@ from email.mime.text import MIMEText
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 
 from app.db.database import get_db
-from app.db.models import User
+from app.db.models import (
+    User, UserCV, CVEmbedding, JobSearch, Job, JobEmbedding,
+    TailoredCV, HRContact, Application, InterviewPrep,
+    AgentExecution, ChatMessage, UserIntegration,
+)
 from app.core.security import hash_password, verify_password, create_access_token
 from app.core.redis_client import redis_client
 from app.api.deps import get_current_user
@@ -194,7 +198,34 @@ async def delete_account(
     db: AsyncSession = Depends(get_db),
 ):
     """Permanently delete the authenticated user's account and all associated data."""
+    uid = current_user.id
+
+    # Collect user's search IDs and job IDs for cascading deletes
+    search_rows = (await db.execute(select(JobSearch.id).where(JobSearch.user_id == uid))).scalars().all()
+    job_rows = []
+    if search_rows:
+        job_rows = (await db.execute(select(Job.id).where(Job.search_id.in_(search_rows)))).scalars().all()
+
+    # Delete deepest children first to avoid FK violations
+    if job_rows:
+        await db.execute(delete(JobEmbedding).where(JobEmbedding.job_id.in_(job_rows)))
+        await db.execute(delete(HRContact).where(HRContact.job_id.in_(job_rows)))
+        await db.execute(delete(InterviewPrep).where(InterviewPrep.job_id.in_(job_rows)))
+        await db.execute(delete(Application).where(Application.job_id.in_(job_rows)))
+        await db.execute(delete(TailoredCV).where(TailoredCV.job_id.in_(job_rows)))
+        await db.execute(delete(Job).where(Job.id.in_(job_rows)))
+
+    # User-linked tables
+    await db.execute(delete(ChatMessage).where(ChatMessage.user_id == uid))
+    await db.execute(delete(AgentExecution).where(AgentExecution.user_id == uid))
+    await db.execute(delete(UserIntegration).where(UserIntegration.user_id == uid))
+    await db.execute(delete(TailoredCV).where(TailoredCV.user_id == uid))
+    await db.execute(delete(CVEmbedding).where(CVEmbedding.user_id == uid))
+    if search_rows:
+        await db.execute(delete(JobSearch).where(JobSearch.id.in_(search_rows)))
+    await db.execute(delete(UserCV).where(UserCV.user_id == uid))
+
     await db.delete(current_user)
     await db.commit()
-    logger.info("account_deleted", user_id=current_user.id)
+    logger.info("account_deleted", user_id=uid)
     return None
