@@ -763,15 +763,43 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
       if (err instanceof AbortedError) {
         // "Stopped" is persisted to DB by the session-switch effect — no local bubble needed
       } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: "⚠️ Couldn't reach the backend. Please try again in a moment.",
-            time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-          },
-        ]);
+        // If we have streamed job results, convert them to an interactive card
+        // so the user can still act on the jobs even though the final response failed.
+        const stream = useAgentStore.getState().jobStream;
+        if (stream && stream.uniqueJobs.length > 0) {
+          const fallbackJobs = stream.uniqueJobs.map((sj, i) => ({
+            id: `stream-${i}-${crypto.randomUUID().slice(0, 8)}`,
+            title: sj.title,
+            company: sj.company,
+            location: sj.location,
+            salary_range: sj.salary_range,
+            job_type: sj.job_type,
+            application_url: sj.application_url,
+            match_score: 0,
+            hr_found: !!stream.hrStatuses[`${sj.company}|${sj.title}`]?.email,
+          }));
+          clearJobStream();
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "⚠️ The backend timed out, but here are the jobs found so far. You can still browse and apply.",
+              metadata: { type: "job_results", search_id: "fallback", jobs: fallbackJobs },
+              time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+            },
+          ]);
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "⚠️ Couldn't reach the backend. Please try again in a moment.",
+              time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+            },
+          ]);
+        }
       }
     } finally {
       setIsSending(false);
