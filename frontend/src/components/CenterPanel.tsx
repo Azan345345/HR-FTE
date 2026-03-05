@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import {
   Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
-  Pencil, Sparkles, Search, FileText, Mail, Zap, Bot, Loader2, CheckCircle2, GitMerge,
+  Pencil, Sparkles, Search, FileText, Mail, Zap, Loader2, CheckCircle2, GitMerge,
   Briefcase, Brain, ChevronRight, AlertTriangle,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -58,9 +58,7 @@ interface ChatMessage {
 
 function AgentAvatar() {
   return (
-    <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center flex-shrink-0 shadow-sm">
-      <Bot size={14} className="text-white" />
-    </div>
+    <img src="/logo.svg" alt="CareerAgent" className="w-8 h-8 rounded-xl flex-shrink-0 shadow-sm" />
   );
 }
 
@@ -963,12 +961,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
           >
             {/* Brand mark */}
             <div className="relative mb-8">
-              <div
-                className="w-[72px] h-[72px] rounded-[22px] bg-primary flex items-center justify-center"
+              <img
+                src="/logo.svg"
+                alt="CareerAgent"
+                className="w-[72px] h-[72px] rounded-[22px]"
                 style={{ boxShadow: "0 8px 32px -4px hsl(195 94% 45% / 40%), 0 2px 8px -2px hsl(195 94% 45% / 20%)" }}
-              >
-                <Bot size={30} className="text-white" />
-              </div>
+              />
               <motion.div
                 className="absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center"
                 style={{ boxShadow: "0 2px 8px rgba(16,185,129,0.40)" }}
