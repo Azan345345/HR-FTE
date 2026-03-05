@@ -817,40 +817,9 @@ Return ONLY valid JSON."""
             None,
         )
 
-    # ── Exclude jobs already saved for this user (prevents repeated searches
-    #    from showing the same listings over and over). ───────────────────────
-    try:
-        from app.db.database import AsyncSessionLocal as _ASL2
-        from app.agents.job_hunter import _norm_company, _norm_title
-        async with _ASL2() as _dedup_db:
-            existing_result = await _dedup_db.execute(
-                select(Job.company, Job.title)
-                .join(JobSearch, Job.search_id == JobSearch.id)
-                .where(JobSearch.user_id == user_id)
-            )
-            existing_keys = {
-                f"{_norm_company(r[0])}|{_norm_title(r[1])}"
-                for r in existing_result.fetchall()
-            }
-        if existing_keys:
-            before_filter = len(jobs)
-            jobs = [
-                j for j in jobs
-                if f"{_norm_company(j.get('company',''))}|{_norm_title(j.get('title',''))}" not in existing_keys
-            ]
-            removed = before_filter - len(jobs)
-            if removed:
-                logger.info("filtered_existing_jobs", removed=removed, remaining=len(jobs))
-    except Exception as e:
-        logger.warning("dedup_filter_failed", error=str(e))
-
-    if not jobs:
-        await event_bus.emit_agent_completed(user_id, "job_hunter", "No new jobs found")
-        return (
-            "All the matching jobs have already been shown to you in previous searches. "
-            "Try a different role, location, or job type to find new listings.",
-            None,
-        )
+    # Note: Cross-search dedup was removed — it was too aggressive and caused
+    # "No new jobs found" when users re-searched. Within-search dedup is already
+    # handled by the job_hunter's source deduplication logic.
 
     raw_count = len(jobs)
     await event_bus.emit_agent_progress(user_id, "job_hunter", 2, 3, f"Scoring {raw_count} jobs against your CV", "Calculating match scores")
