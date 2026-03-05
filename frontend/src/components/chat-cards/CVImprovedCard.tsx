@@ -34,7 +34,7 @@ export function CVImprovedCard({ metadata, onSendAction, actionInFlight }: Props
         if (res.status === 401) {
           localStorage.removeItem("token");
           localStorage.removeItem("user");
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
         const errBody = await res.json().catch(() => null);

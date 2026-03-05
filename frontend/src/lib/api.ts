@@ -47,7 +47,7 @@ export async function api<T>(endpoint: string, options: FetchOptions = {}): Prom
         if (response.status === 401) {
             localStorage.removeItem("token");
             localStorage.removeItem("user");
-            window.location.href = "/login";
+            window.location.href = "/";
             throw new Error("Session expired. Please log in again.");
         }
         const error = await response.json().catch(() => ({ detail: "Unknown error" }));
