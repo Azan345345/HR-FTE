@@ -101,7 +101,13 @@ export function JobResultsCard({ metadata, onSendAction, actionInFlight }: Props
     if (hrSearchDone) return "not_found"; // search finished, no contact found
     // No live WS data — use stored metadata from DB (historical conversation)
     if (Object.keys(hrResults).length === 0) {
-      return job.hr_found ? "found" : "not_found";
+      // For historical cards, hr_found reflects DB state. For fresh searches,
+      // hr_found is false but the background HR lookup hasn't started yet —
+      // show "pending" (spinner) instead of "not_found" (red badge).
+      if (job.hr_found) return "found";
+      // If hr_found is explicitly true in DB, show found. Otherwise show pending
+      // (background HR lookup will update this via WebSocket events).
+      return "pending";
     }
     return "pending"; // live search in progress, waiting for this job
   };

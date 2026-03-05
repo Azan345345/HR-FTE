@@ -76,6 +76,9 @@ interface AgentStoreState {
     // Persistent HR results — survives clearJobStream so JobResultsCard can update
     hrResults: Record<string, { status: HrStatus; email?: string }>;
     hrSearchDone: boolean;
+    // Session tracking — prevents stale WebSocket events from populating a new conversation
+    _activeSessionId: string | null;
+    setActiveSessionId: (id: string | null) => void;
     setAgentStatus: (name: AgentName, updates: Partial<AgentInfo>) => void;
     setActiveAgent: (name: AgentName | null) => void;
     addCompletedNode: (node: string) => void;
@@ -117,6 +120,9 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     jobStream: null,
     hrResults: {},
     hrSearchDone: false,
+    _activeSessionId: null,
+
+    setActiveSessionId: (id) => set({ _activeSessionId: id }),
 
     setAgentStatus: (name, updates) =>
         set((state) => ({
@@ -165,10 +171,14 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
         })),
 
     resetAll: () =>
-        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [], jobStream: null, hrResults: {}, hrSearchDone: false }),
+        set({ agents: { ...defaultAgents }, activeAgent: null, completedNodes: [], logs: [], jobStream: null, hrResults: {}, hrSearchDone: false, _activeSessionId: null }),
 
     startJobStream: () =>
-        set({ jobStream: { sources: [], deduplicating: false, active: true, uniqueJobs: [], hrStatuses: {} } }),
+        set((state) => {
+            // Don't start a new stream if no active session (user just switched convos)
+            if (!state._activeSessionId) return state;
+            return { jobStream: { sources: [], deduplicating: false, active: true, uniqueJobs: [], hrStatuses: {} } };
+        }),
 
     jobStreamSourceStart: (key, label) =>
         set((state) => {

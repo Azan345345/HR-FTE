@@ -1354,6 +1354,13 @@ async def _handle_cv_tailor_from_description(
         select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
     )
     cv = cv_result.scalar_one_or_none()
+    if not cv:
+        # Fallback to most recent CV if no primary is set
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id)
+            .order_by(UserCV.created_at.desc()).limit(1)
+        )
+        cv = cv_result.scalar_one_or_none()
     if not cv or not cv.parsed_data:
         return (
             "Please **upload your CV** first using the sidebar upload button, "
@@ -1545,7 +1552,7 @@ async def _handle_tailor_apply(
     if sel_text is not None:
         return sel_text, sel_meta
 
-    # Load CV: use selected if provided, else fall back to primary
+    # Load CV: use selected if provided, else fall back to primary, then most recent
     if selected_cv_id:
         cv_result = await db.execute(
             select(UserCV).where(UserCV.id == selected_cv_id, UserCV.user_id == user_id)
@@ -1555,6 +1562,13 @@ async def _handle_tailor_apply(
             select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
         )
     cv = cv_result.scalar_one_or_none()
+    if not cv and not selected_cv_id:
+        # Fallback to most recent CV if no primary is set
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id)
+            .order_by(UserCV.created_at.desc()).limit(1)
+        )
+        cv = cv_result.scalar_one_or_none()
     if not cv or not cv.parsed_data:
         return (
             "Please **upload your CV** first (use the sidebar upload button) "
@@ -2519,6 +2533,13 @@ async def _handle_cv_general_request(
         select(UserCV).where(UserCV.user_id == user_id, UserCV.is_primary == True)
     )
     cv = cv_result.scalar_one_or_none()
+    if not cv:
+        # Fallback to most recent CV if no primary is set
+        cv_result = await db.execute(
+            select(UserCV).where(UserCV.user_id == user_id)
+            .order_by(UserCV.created_at.desc()).limit(1)
+        )
+        cv = cv_result.scalar_one_or_none()
     if not cv or not cv.parsed_data:
         return (
             "I don't see a CV on file yet. Upload your PDF or DOCX using the button in the "

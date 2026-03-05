@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import {
   Paperclip, ArrowUp, Copy, ThumbsUp, ThumbsDown, RefreshCw,
   Pencil, Sparkles, Search, FileText, Mail, Zap, Loader2, CheckCircle2, GitMerge,
-  Briefcase, Brain, ChevronRight, AlertTriangle,
+  Briefcase, Brain, ChevronRight, ChevronDown, ChevronUp, AlertTriangle,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -259,6 +259,7 @@ function SourceSection({ source }: { source: StreamSource }) {
 }
 
 function LiveJobStreamPanel({ stream }: { stream: JobStreamState }) {
+  const [collapsed, setCollapsed] = useState(false);
   const totalFound = stream.sources.reduce((n, s) => n + s.jobs.length, 0);
   const hasUniqueJobs = stream.uniqueJobs.length > 0;
   const hrStatuses = stream.hrStatuses;
@@ -273,7 +274,33 @@ function LiveJobStreamPanel({ stream }: { stream: JobStreamState }) {
         <AgentAvatar />
         <span className="text-[11px] font-semibold text-primary tracking-wide">CareerAgent</span>
         <span className="text-[10px] text-slate-400">· Live</span>
+        <button
+          onClick={() => setCollapsed(c => !c)}
+          className="ml-auto p-1 hover:bg-slate-100 rounded-lg transition-colors"
+          title={collapsed ? "Expand" : "Minimize"}
+        >
+          {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
+        </button>
       </div>
+      {collapsed ? (
+        <button
+          onClick={() => setCollapsed(false)}
+          className="w-full bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm text-left"
+        >
+          <div className="flex items-center gap-2">
+            <Loader2 size={13} className={stream.active ? "text-primary animate-spin" : "text-green-500"} />
+            <span className="text-[12px] text-slate-600">
+              {hasUniqueJobs
+                ? `${stream.uniqueJobs.length} unique jobs found`
+                : stream.active
+                  ? `Searching… ${totalFound > 0 ? `${totalFound} found so far` : ""}`
+                  : "Job search complete"
+              }
+            </span>
+            <ChevronDown size={13} className="ml-auto text-slate-400" />
+          </div>
+        </button>
+      ) : (
       <div className="bg-white border border-slate-100 rounded-2xl rounded-tl-sm px-4 py-4 shadow-sm space-y-4">
 
         {/* ── Search sources header ── */}
@@ -385,6 +412,7 @@ function LiveJobStreamPanel({ stream }: { stream: JobStreamState }) {
         )}
 
       </div>
+      )}
     </motion.div>
   );
 }
@@ -639,7 +667,7 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
   // AbortController + session ID to cancel in-flight chat requests on conversation switch
   const abortRef = useRef<{ controller: AbortController; sessionId: string } | null>(null);
 
-  const { jobStream, clearJobStream, agents, resetAll: resetAgentStore } = useAgentStore();
+  const { jobStream, clearJobStream, agents, resetAll: resetAgentStore, setActiveSessionId } = useAgentStore();
   const hrProcessing = agents.hr_finder?.status === "processing";
 
   const sessionIdRef = useRef<string | null>(activeSessionId);
@@ -658,6 +686,8 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     }
     // C2 fix: Reset agent store on conversation switch to prevent state leak
     resetAgentStore();
+    // Track active session so WebSocket events from old sessions are ignored
+    setActiveSessionId(activeSessionId);
     // M2 fix: Clear input state on conversation switch
     setInputValue("");
     setActiveCommand(null);
@@ -741,9 +771,29 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     const controller = new AbortController();
     const targetSessionId = sessionIdRef.current || activeSessionId || crypto.randomUUID();
     abortRef.current = { controller, sessionId: targetSessionId };
+    // Ensure WebSocket events are tied to the current session
+    setActiveSessionId(targetSessionId);
+
+    // Retry helper — retries once on network/502 errors (common on slow connections)
+    const attemptSend = async (retries = 1): Promise<Awaited<ReturnType<typeof sendChatMessage>>> => {
+      try {
+        return await sendChatMessage(backendText, targetSessionId, pipeline, controller.signal);
+      } catch (err) {
+        if (err instanceof AbortedError) throw err;
+        // Check if job stream has results from WebSocket — backend processed but HTTP timed out
+        const currentStream = useAgentStore.getState().jobStream;
+        if (currentStream && currentStream.uniqueJobs.length > 0) throw err; // use fallback path
+        if (retries > 0) {
+          // Wait briefly then retry once
+          await new Promise(r => setTimeout(r, 2000));
+          return attemptSend(retries - 1);
+        }
+        throw err;
+      }
+    };
 
     try {
-      const resp = await sendChatMessage(backendText, targetSessionId, pipeline, controller.signal);
+      const resp = await attemptSend();
       if (!activeSessionId) onSessionCreated(targetSessionId);
       // Clear live stream panel when final job results card arrives — avoids duplication
       if (resp.metadata?.type === "job_results") clearJobStream();
