@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from app.db.database import get_db
-from app.db.models import User, ChatMessage
+from app.db.models import User, ChatMessage, HRContact
 from app.api.deps import get_current_user
 import os
 import json
@@ -164,6 +164,32 @@ async def get_chat_history(
         .order_by(ChatMessage.created_at.asc())
     )
     messages = result.scalars().all()
+
+    # Enrich job_results metadata with current HR status from DB
+    # so historical conversations show correct hr_found badges.
+    job_ids_to_check: set[str] = set()
+    job_result_msgs = []
+    for m in messages:
+        meta = m.metadata_ if m.metadata_ else None
+        if meta and meta.get("type") == "job_results" and meta.get("jobs"):
+            job_result_msgs.append(meta)
+            for j in meta["jobs"]:
+                if j.get("id"):
+                    job_ids_to_check.add(j["id"])
+
+    hr_found_ids: set[str] = set()
+    if job_ids_to_check:
+        hr_result = await db.execute(
+            select(HRContact.job_id)
+            .where(HRContact.job_id.in_(job_ids_to_check), HRContact.hr_email.isnot(None), HRContact.hr_email != "")
+        )
+        hr_found_ids = {r[0] for r in hr_result.fetchall()}
+
+    if hr_found_ids:
+        for meta in job_result_msgs:
+            for j in meta.get("jobs", []):
+                if j.get("id") in hr_found_ids:
+                    j["hr_found"] = True
 
     return ChatHistoryResponse(
         messages=[
