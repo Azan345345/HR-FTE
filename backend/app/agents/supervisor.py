@@ -2071,9 +2071,9 @@ async def _handle_send_email(
             return (
                 "**Gmail authorization has expired or been revoked.**\n\n"
                 "Your Google refresh token is no longer valid. To fix this:\n\n"
-                "1. Go to **Settings → Data Sources**\n"
+                "1. Go to **Settings → Integrations** tab\n"
                 "2. Click **Reconnect Gmail** and authorize access again\n"
-                "3. Come back here and click **Send Email** to retry\n\n"
+                "3. Come back here and click **Send via Gmail** to retry\n\n"
                 "**Common causes:**\n"
                 "- Google password was changed\n"
                 "- App access was revoked from [myaccount.google.com/permissions](https://myaccount.google.com/permissions)\n"
@@ -2087,7 +2087,7 @@ async def _handle_send_email(
         return (
             "**Gmail is not connected.** I can't send the email without access to your Gmail account.\n\n"
             "Please connect your Gmail first:\n\n"
-            "1. Go to **Settings** (bottom-left) → **Data Sources**\n"
+            "1. Go to **Settings** (bottom-left) → **Integrations** tab\n"
             "2. Click **Connect Gmail** and authorize access\n"
             "3. Come back here and click **Send via Gmail** again\n\n"
             "Your application email and CV are saved — nothing will be lost.",
