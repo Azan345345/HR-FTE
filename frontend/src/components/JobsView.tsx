@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface JobsViewProps {
   onNavigateToInterview?: (jobId: string) => void;
+  onApplyViaChat?: (jobId: string) => void;
 }
 
 type TabType = "discovered" | "applied" | "interview" | "rejected";
@@ -23,7 +24,7 @@ const STATUS_STYLES: Record<string, string> = {
   applied:    "bg-blue-50 border-blue-200 text-blue-700",
 };
 
-export function JobsView({ onNavigateToInterview }: JobsViewProps) {
+export function JobsView({ onNavigateToInterview, onApplyViaChat }: JobsViewProps) {
   const [activeTab, setActiveTab] = useState<TabType>("discovered");
   const [jobs, setJobs] = useState<any[]>([]);
   const [applications, setApplications] = useState<any[]>([]);
@@ -129,11 +130,13 @@ export function JobsView({ onNavigateToInterview }: JobsViewProps) {
     }
   };
 
-  const startApply = (job: any, jobId: string) => {
-    const msg = `Tailor my CV and apply for ${job.title} at ${job.company} (job ID: ${jobId})`;
-    setChatInput(msg);
-    setChatOpen(true);
-    setTimeout(() => inputRef.current?.focus(), 100);
+  const startApply = (_job: any, jobId: string) => {
+    if (onApplyViaChat) {
+      onApplyViaChat(jobId);
+    } else {
+      // Fallback: fire custom event for parent to handle
+      window.dispatchEvent(new CustomEvent("apply-via-chat", { detail: { jobId } }));
+    }
   };
 
   const renderJobCard = (item: any, isApplication = false) => {

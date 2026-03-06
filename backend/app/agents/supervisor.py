@@ -2143,16 +2143,62 @@ async def _handle_send_email(
     await db.commit()
     await db.refresh(application)
 
-    # Find next job suggestion
+    # Find next job suggestion — prefer sibling jobs from the same search query,
+    # excluding already-applied jobs and jobs without an HR contact email.
     from app.db.models import JobSearch
-    next_job_result = await db.execute(
-        select(Job)
-        .join(JobSearch)
-        .where(JobSearch.user_id == user_id, Job.id != application.job_id)
-        .order_by(Job.match_score.desc().nulls_last())
-        .limit(1)
+    from sqlalchemy import and_, exists as sa_exists
+
+    # Subquery: job IDs that already have a "sent"/"applied" application
+    applied_ids_sq = (
+        select(Application.job_id)
+        .where(Application.user_id == user_id, Application.status.in_(["sent", "applied", "interview"]))
+        .correlate(None)
+        .scalar_subquery()
     )
-    next_job_db = next_job_result.scalar_one_or_none()
+    # Subquery: job has at least one HR contact with a non-empty email
+    has_hr_sq = (
+        sa_exists(
+            select(HRContact.id).where(
+                HRContact.job_id == Job.id,
+                HRContact.hr_email.isnot(None),
+                HRContact.hr_email != "",
+            )
+        )
+    )
+
+    # 1) Try sibling jobs from the same search_id
+    current_search_id = job.search_id if job else None
+    next_job_db = None
+    if current_search_id:
+        sibling_result = await db.execute(
+            select(Job)
+            .where(
+                Job.search_id == current_search_id,
+                Job.id != application.job_id,
+                Job.id.notin_(applied_ids_sq),
+                has_hr_sq,
+            )
+            .order_by(Job.match_score.desc().nulls_last())
+            .limit(1)
+        )
+        next_job_db = sibling_result.scalar_one_or_none()
+
+    # 2) Fallback: any discovered job from any search by this user
+    if not next_job_db:
+        fallback_result = await db.execute(
+            select(Job)
+            .join(JobSearch)
+            .where(
+                JobSearch.user_id == user_id,
+                Job.id != application.job_id,
+                Job.id.notin_(applied_ids_sq),
+                has_hr_sq,
+            )
+            .order_by(Job.match_score.desc().nulls_last())
+            .limit(1)
+        )
+        next_job_db = fallback_result.scalar_one_or_none()
+
     next_job = None
     if next_job_db:
         next_job = {

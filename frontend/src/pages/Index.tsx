@@ -146,10 +146,19 @@ const Index = () => {
               </>
             ) : activeView === "jobs" ? (
               <div className="flex-1 min-w-0">
-                <JobsView onNavigateToInterview={(jobId) => {
+                <JobsView
+                onNavigateToInterview={(jobId) => {
                   setFocusedJobId(jobId);
                   setActiveView("interview_prep");
-                }} />
+                }}
+                onApplyViaChat={(jobId) => {
+                  setActiveView("chat");
+                  // Small delay so CenterPanel mounts/renders before the event fires
+                  setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent("apply-via-chat", { detail: { jobId } }));
+                  }, 150);
+                }}
+              />
               </div>
             ) : activeView === "interview_prep" ? (
               <div className="flex-1 min-w-0">

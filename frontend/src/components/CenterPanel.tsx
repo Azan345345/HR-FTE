@@ -726,6 +726,16 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Listen for "apply-via-chat" events from JobsView — trigger __TAILOR_APPLY__ action
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { jobId } = (e as CustomEvent).detail;
+      if (jobId) sendAction(`__TAILOR_APPLY__:${jobId}`);
+    };
+    window.addEventListener("apply-via-chat", handler);
+    return () => window.removeEventListener("apply-via-chat", handler);
+  }, []); // sendAction is stable (defined in component body, not a dep that changes)
+
   const handleScroll = () => {
     if (scrollContainerRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
