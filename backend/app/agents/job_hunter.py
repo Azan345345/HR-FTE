@@ -179,21 +179,21 @@ Return ONLY JSON."""
             logger.warning(f"{source_key}_failed", error=str(e))
             return source_key, []
 
-    source_tasks = []
-    if settings.APIFY_API_KEY:
-        source_tasks.append(_run_source("indeed", "Indeed",
-            _search_apify_indeed(search_title, search_location, limit, country_code, job_type)))
-        source_tasks.append(_run_source("linkedin", "LinkedIn",
-            _search_apify_linkedin(search_title, search_location, limit, country_code, job_type)))
-    if settings.SERPAPI_API_KEY:
-        source_tasks.append(_run_source("google_jobs", f"Google Jobs ({country_name or 'Global'})",
-            _search_serpapi(search_title, search_location, limit, country_code, job_type)))
+    # ── Tier 1: Free / low-cost sources (run concurrently) ─────────────────
+    free_tasks = []
     if settings.RAPIDAPI_KEY:
-        source_tasks.append(_run_source("jsearch", "JSearch",
+        free_tasks.append(_run_source("jsearch", "JSearch",
             _search_jsearch(search_title, search_location, limit, country_code, job_type)))
+        free_tasks.append(_run_source("indeed_rapid", "Indeed",
+            _search_indeed_rapidapi(search_title, search_location, limit, country_code, job_type)))
+        free_tasks.append(_run_source("glassdoor", "Glassdoor",
+            _search_glassdoor_rapidapi(search_title, search_location, limit, country_code, job_type)))
+    if settings.ADZUNA_APP_ID and settings.ADZUNA_APP_KEY:
+        free_tasks.append(_run_source("adzuna", "Adzuna",
+            _search_adzuna(search_title, search_location, limit, country_code, job_type)))
 
-    if source_tasks:
-        results = await asyncio.gather(*source_tasks, return_exceptions=True)
+    if free_tasks:
+        results = await asyncio.gather(*free_tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
                 logger.warning("source_task_exception", error=str(result))
@@ -202,6 +202,30 @@ Return ONLY JSON."""
             if jobs:
                 sources_tried.append(source_key)
             all_jobs.extend(jobs)
+
+    # ── Tier 2: Paid fallback sources (only if free sources returned nothing) ─
+    if not all_jobs:
+        logger.info("free_sources_empty_trying_paid", sources_tried=sources_tried)
+        paid_tasks = []
+        if settings.APIFY_API_KEY:
+            paid_tasks.append(_run_source("indeed", "Indeed (Apify)",
+                _search_apify_indeed(search_title, search_location, limit, country_code, job_type)))
+            paid_tasks.append(_run_source("linkedin", "LinkedIn (Apify)",
+                _search_apify_linkedin(search_title, search_location, limit, country_code, job_type)))
+        if settings.SERPAPI_API_KEY:
+            paid_tasks.append(_run_source("google_jobs", f"Google Jobs ({country_name or 'Global'})",
+                _search_serpapi(search_title, search_location, limit, country_code, job_type)))
+
+        if paid_tasks:
+            results = await asyncio.gather(*paid_tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning("paid_source_task_exception", error=str(result))
+                    continue
+                source_key, jobs = result
+                if jobs:
+                    sources_tried.append(source_key)
+                all_jobs.extend(jobs)
 
     # 5. LLM fallback — runs only when every real API returned nothing
     if not all_jobs:
@@ -757,6 +781,223 @@ def _format_salary(item: dict) -> str:
     if lo and hi:
         return f"${lo:,.0f} – ${hi:,.0f}"
     return ""
+
+
+# ── RapidAPI Indeed Scraper ───────────────────────────────────────────────────
+
+async def _search_indeed_rapidapi(
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
+) -> list[dict]:
+    """Search Indeed via RapidAPI Indeed Scraper (border-line)."""
+    import httpx
+
+    _indeed_type = {
+        "fulltime": "fulltime", "parttime": "parttime",
+        "contract": "contract", "temporary": "temporary", "internship": "internship",
+    }
+
+    params: dict = {
+        "query": query,
+        "location": location or "",
+        "page": "1",
+        "country": country_code.upper() if country_code else "US",
+        "sort": "date",
+    }
+    if job_type in _indeed_type:
+        params["job_type"] = _indeed_type[job_type]
+
+    async with httpx.AsyncClient(timeout=25) as client:
+        response = await client.get(
+            "https://indeed-scraper-api.p.rapidapi.com/api/job",
+            headers={
+                "X-RapidAPI-Key": settings.RAPIDAPI_KEY,
+                "X-RapidAPI-Host": "indeed-scraper-api.p.rapidapi.com",
+            },
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    items = data if isinstance(data, list) else data.get("jobs", data.get("data", data.get("results", [])))
+    if not isinstance(items, list):
+        items = []
+
+    jobs = []
+    for item in items:
+        title = item.get("title") or item.get("job_title") or item.get("positionName") or ""
+        company = item.get("company") or item.get("company_name") or item.get("employer") or ""
+        if not title or not company:
+            continue
+        apply_url = item.get("url") or item.get("link") or item.get("job_url") or ""
+        d = _extract_domain_from_url(apply_url)
+        domain = d if d and not _is_job_board(d) else _guess_domain(company)
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": item.get("location") or item.get("job_location") or "",
+            "description": item.get("description") or item.get("snippet") or "",
+            "source": "indeed",
+            "application_url": apply_url,
+            "posted_date": item.get("date") or item.get("posted_at") or "",
+            "salary_range": item.get("salary") or item.get("salary_range") or "",
+            "job_type": _ensure_str(item.get("job_type") or item.get("employment_type")),
+            "requirements": _extract_requirements(item.get("description") or ""),
+            "matching_skills": [],
+            "missing_skills": [],
+            "company_domain": domain,
+        })
+    return jobs[:limit]
+
+
+# ── RapidAPI Glassdoor Real-Time ─────────────────────────────────────────────
+
+async def _search_glassdoor_rapidapi(
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
+) -> list[dict]:
+    """Search Glassdoor via RapidAPI Glassdoor Real-Time."""
+    import httpx
+
+    params: dict = {
+        "query": query,
+        "location": location or "",
+        "page": "1",
+    }
+    if country_code:
+        params["country"] = country_code.upper()
+
+    async with httpx.AsyncClient(timeout=25) as client:
+        response = await client.get(
+            "https://glassdoor-real-time.p.rapidapi.com/jobs/search",
+            headers={
+                "X-RapidAPI-Key": settings.RAPIDAPI_KEY,
+                "X-RapidAPI-Host": "glassdoor-real-time.p.rapidapi.com",
+            },
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    items = data if isinstance(data, list) else data.get("jobs", data.get("data", data.get("results", [])))
+    if not isinstance(items, list):
+        items = []
+
+    jobs = []
+    for item in items:
+        title = item.get("title") or item.get("job_title") or item.get("jobTitle") or ""
+        company = item.get("company") or item.get("company_name") or item.get("companyName") or item.get("employer_name") or ""
+        if not title or not company:
+            continue
+        apply_url = item.get("url") or item.get("link") or item.get("job_url") or item.get("applyUrl") or ""
+        d = _extract_domain_from_url(apply_url)
+        domain = d if d and not _is_job_board(d) else _guess_domain(company)
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": item.get("location") or item.get("job_location") or "",
+            "description": item.get("description") or item.get("snippet") or item.get("jobDescription") or "",
+            "source": "glassdoor",
+            "application_url": apply_url,
+            "posted_date": item.get("date") or item.get("posted_at") or item.get("postedDate") or "",
+            "salary_range": item.get("salary") or item.get("salary_range") or item.get("salaryRange") or "",
+            "job_type": _ensure_str(item.get("job_type") or item.get("employment_type") or item.get("employmentType")),
+            "requirements": _extract_requirements(item.get("description") or ""),
+            "matching_skills": [],
+            "missing_skills": [],
+            "company_domain": domain,
+        })
+    return jobs[:limit]
+
+
+# ── Adzuna Official API ──────────────────────────────────────────────────────
+
+async def _search_adzuna(
+    query: str, location: Optional[str], limit: int, country_code: str = "us",
+    job_type: Optional[str] = None,
+) -> list[dict]:
+    """Search jobs via Adzuna official API (free tier: 100 req/day)."""
+    import httpx
+
+    # Adzuna uses lowercase country codes in their URL path
+    cc = (country_code or "us").lower()
+    # Adzuna supports these country codes; fall back to 'us' for unsupported
+    _adzuna_countries = {
+        "us", "gb", "au", "ca", "de", "fr", "in", "nl", "br", "pl",
+        "za", "nz", "sg", "at", "ch", "it", "es", "ru", "be", "mx",
+    }
+    if cc not in _adzuna_countries:
+        cc = "us"
+
+    _adzuna_type = {
+        "fulltime": "full_time", "parttime": "part_time",
+        "contract": "contract", "temporary": "contract",
+        "internship": "full_time",
+    }
+
+    params: dict = {
+        "app_id": settings.ADZUNA_APP_ID,
+        "app_key": settings.ADZUNA_APP_KEY,
+        "results_per_page": min(limit, 20),
+        "what": query,
+        "content-type": "application/json",
+        "max_days_old": 14,
+    }
+    if location:
+        params["where"] = location
+    if job_type in _adzuna_type:
+        params["full_time"] = "1" if job_type == "fulltime" else ""
+        params["part_time"] = "1" if job_type == "parttime" else ""
+        params["contract"] = "1" if job_type in ("contract", "temporary") else ""
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"https://api.adzuna.com/v1/api/jobs/{cc}/search/1",
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    jobs = []
+    for item in data.get("results", []):
+        title = item.get("title") or ""
+        company_obj = item.get("company") or {}
+        company = company_obj.get("display_name") or "" if isinstance(company_obj, dict) else str(company_obj)
+        if not title or not company:
+            continue
+        apply_url = item.get("redirect_url") or item.get("adref") or ""
+        d = _extract_domain_from_url(apply_url)
+        domain = d if d and not _is_job_board(d) else _guess_domain(company)
+
+        salary = ""
+        sal_min = item.get("salary_min")
+        sal_max = item.get("salary_max")
+        if sal_min and sal_max:
+            salary = f"${sal_min:,.0f} – ${sal_max:,.0f}"
+        elif sal_min:
+            salary = f"From ${sal_min:,.0f}"
+        elif sal_max:
+            salary = f"Up to ${sal_max:,.0f}"
+
+        location_obj = item.get("location") or {}
+        loc_parts = location_obj.get("display_name", "") if isinstance(location_obj, dict) else str(location_obj)
+
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": loc_parts,
+            "description": item.get("description") or "",
+            "source": "adzuna",
+            "application_url": apply_url,
+            "posted_date": item.get("created") or "",
+            "salary_range": salary,
+            "job_type": _ensure_str(item.get("contract_type") or item.get("contract_time")),
+            "requirements": _extract_requirements(item.get("description") or ""),
+            "matching_skills": [],
+            "missing_skills": [],
+            "company_domain": domain,
+        })
+    return jobs[:limit]
 
 
 # ── LLM Sample Fallback ───────────────────────────────────────────────────────

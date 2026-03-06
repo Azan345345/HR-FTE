@@ -37,12 +37,15 @@ class Settings(BaseSettings):
     SERPAPI_API_KEY: str = ""
     RAPIDAPI_KEY: str = ""
     APIFY_API_KEY: str = ""
+    ADZUNA_APP_ID: str = ""
+    ADZUNA_APP_KEY: str = ""
 
     # --- HR Contact ---
     PROSPEO_API_KEY: str = ""
     HUNTER_API_KEY: str = ""       # hunter.io — 25 free domain searches/month
-    SNOV_CLIENT_ID: str = ""       # snov.io — 50 free searches/month
-    SNOV_CLIENT_SECRET: str = ""   # snov.io
+    SERPER_API_KEY: str = ""       # serper.dev — 2500 free Google searches
+    SNOV_CLIENT_ID: str = ""       # snov.io (legacy, kept for compat)
+    SNOV_CLIENT_SECRET: str = ""   # snov.io (legacy, kept for compat)
 
     # --- Google Cloud ---
     GOOGLE_CLOUD_PROJECT_ID: str = ""

@@ -1,14 +1,13 @@
 """HR Finder Agent — finds verified HR/recruiter contacts for job applications.
 
 Strategy order (stops only when confident contacts are found):
-  1. Hunter.io Domain Search (HR department)         — HUNTER_API_KEY
-  2. Hunter.io Domain Search (Executive/Management)  — HUNTER_API_KEY
-  3. Hunter.io Domain Search (broad + scoring)       — HUNTER_API_KEY
-  4. Company website scraper                         — FREE
-  5. Apify Contact Info Scraper                      — APIFY_API_KEY
-  6. Prospeo Search + Enrich Person                  — PROSPEO_API_KEY
-  7. SerpAPI Google HR search                        — SERPAPI_API_KEY
-  8. Pattern prefix fallback (with Hunter Verifier)  — HUNTER_API_KEY / FREE
+  1. Company website scraper                         — FREE
+  2. SMTP pattern verification                       — FREE
+  3. Hunter.io Domain Search                         — HUNTER_API_KEY
+  4. Serper.dev Google HR search                     — SERPER_API_KEY (2500 free)
+  5. Apify Contact Info Scraper (fallback)           — APIFY_API_KEY
+  6. Prospeo Search + Enrich Person (fallback)       — PROSPEO_API_KEY
+  7. Pattern prefix fallback (with Hunter Verifier)  — HUNTER_API_KEY / FREE
 
 Multi-email design:
   Every strategy contributes to a ranked list of contacts across four roles:
@@ -129,12 +128,13 @@ async def _find_hr_contact_impl(
 ) -> dict:
     """Find verified HR / CEO / dept-head contacts.
 
-    Strategy order:
-      1. Hunter.io  (company-name search — 1 API call, finds HR + CEO + mgmt)
-      2. Website scraper (free, scrapes /contact /about /team pages)
-      3. SerpAPI LinkedIn search  (finds names → constructs emails)
-      4. Apify / Prospeo          (only when Hunter found zero people)
-      5. Pattern fallback + Hunter verifier
+    Strategy order (free-first, paid-fallback):
+      1. Company website scraper  (FREE — scrapes /contact /about /team pages)
+      2. SMTP pattern verify      (FREE — verifies hr@, careers@, etc.)
+      3. Hunter.io                (25 free/month — company/domain search)
+      4. Serper.dev Google search  (2500 free/month — HR email + LinkedIn harvest)
+      5. Apify / Prospeo          (paid fallback — only when nothing found above)
+      6. Pattern fallback + Hunter verifier
     """
     from app.config import settings
 
@@ -150,50 +150,15 @@ async def _find_hr_contact_impl(
 
     api_errors = []
     all_contacts: list[dict] = []
-    hunter_found_anyone = False       # True if Hunter returned ≥1 contact
     resolved_domain: Optional[str] = company_domain or None
 
-    # ── 1. Hunter.io — prefer domain param when we have a real domain,
-    #    fall back to company-name search otherwise. Per Hunter docs,
-    #    "domain provides better results as it removes company name conversion."
-    if settings.HUNTER_API_KEY:
-        try:
-            if company_domain and "." in company_domain:
-                # We have a real domain (from JSearch employer_website etc.)
-                contacts = await _hunter_domain_search(
-                    company_domain, settings.HUNTER_API_KEY, company=company
-                )
-                hunter_domain = company_domain
-            else:
-                contacts, hunter_domain = await _hunter_company_search(
-                    company, settings.HUNTER_API_KEY
-                )
-            if contacts:
-                all_contacts.extend(contacts)
-                hunter_found_anyone = True
-                logger.info("hunter_found", company=company,
-                            domain=hunter_domain, count=len(contacts),
-                            roles=list({c["role"] for c in contacts}))
-            else:
-                logger.info("hunter_no_results", company=company,
-                            domain=hunter_domain,
-                            note="no emails indexed for this company yet")
-            if hunter_domain:
-                resolved_domain = hunter_domain
-        except Exception as e:
-            api_errors.append(f"Hunter: {e}")
-            logger.warning("hunter_failed", company=company, error=str(e))
-    else:
-        logger.warning("hunter_key_missing",
-                       msg="Set HUNTER_API_KEY in env — it's the primary email source")
-
-    # Resolve domain if Hunter didn't give us one
+    # Resolve domain early — many strategies need it
     if not resolved_domain:
         guessed = _guess_domain(company)
         resolved_domain = await _resolve_domain(guessed) if guessed else guessed
     domain = resolved_domain
 
-    # ── 2. Company website scraper (free) ─────────────────────────────────
+    # ── 1. Company website scraper (FREE) ─────────────────────────────────
     if domain:
         try:
             scraped = await _scrape_company_website(company, domain)
@@ -205,34 +170,82 @@ async def _find_hr_contact_impl(
             api_errors.append(f"Website scraper: {e}")
             logger.warning("website_scrape_failed", error=str(e))
 
-    # ── 3. SerpAPI — LinkedIn people search (supplements Hunter) ──────────
-    if settings.SERPAPI_API_KEY and domain:
+    # ── 2. SMTP pattern verification (FREE) ───────────────────────────────
+    if domain:
         try:
-            serp_contacts = await _search_serpapi_hr(company, domain,
-                                                      settings.SERPAPI_API_KEY)
-            all_contacts.extend(serp_contacts)
-            if serp_contacts:
-                logger.info("serpapi_found", company=company,
-                            count=len(serp_contacts))
+            smtp_contacts = await _smtp_verify_patterns(domain)
+            if smtp_contacts:
+                all_contacts.extend(smtp_contacts)
+                logger.info("smtp_verify_found", company=company,
+                            count=len(smtp_contacts))
         except Exception as e:
-            api_errors.append(f"SerpAPI: {e}")
-            logger.warning("serpapi_failed", error=str(e))
+            api_errors.append(f"SMTP verify: {e}")
+            logger.warning("smtp_verify_failed", error=str(e))
 
-    # ── 4. Apify / Prospeo — ONLY when Hunter found zero people ───────────
-    if not hunter_found_anyone:
-        if settings.APIFY_API_KEY and domain:
+    # ── 3. Hunter.io (25 free/month) ──────────────────────────────────────
+    if settings.HUNTER_API_KEY and not _has_hr_contact(all_contacts):
+        try:
+            if company_domain and "." in company_domain:
+                contacts = await _hunter_domain_search(
+                    company_domain, settings.HUNTER_API_KEY, company=company
+                )
+                hunter_domain = company_domain
+            else:
+                contacts, hunter_domain = await _hunter_company_search(
+                    company, settings.HUNTER_API_KEY
+                )
+            if contacts:
+                all_contacts.extend(contacts)
+                logger.info("hunter_found", company=company,
+                            domain=hunter_domain, count=len(contacts),
+                            roles=list({c["role"] for c in contacts}))
+            if hunter_domain:
+                resolved_domain = hunter_domain
+                domain = resolved_domain
+        except Exception as e:
+            api_errors.append(f"Hunter: {e}")
+            logger.warning("hunter_failed", company=company, error=str(e))
+
+    # ── 4. Serper.dev Google HR search (2500 free/month) ──────────────────
+    if settings.SERPER_API_KEY and domain and not _has_hr_contact(all_contacts):
+        try:
+            serper_contacts = await _search_serper_hr(company, domain,
+                                                       settings.SERPER_API_KEY)
+            all_contacts.extend(serper_contacts)
+            if serper_contacts:
+                logger.info("serper_found", company=company,
+                            count=len(serper_contacts))
+        except Exception as e:
+            api_errors.append(f"Serper: {e}")
+            logger.warning("serper_failed", error=str(e))
+
+    # ── 5. Paid fallbacks — only when nothing confident found above ───────
+    if not _has_hr_contact(all_contacts):
+        # 5a. SerpAPI LinkedIn search (paid)
+        if settings.SERPAPI_API_KEY and domain:
+            try:
+                serp_contacts = await _search_serpapi_hr(company, domain,
+                                                          settings.SERPAPI_API_KEY)
+                all_contacts.extend(serp_contacts)
+                if serp_contacts:
+                    logger.info("serpapi_found", company=company,
+                                count=len(serp_contacts))
+            except Exception as e:
+                api_errors.append(f"SerpAPI: {e}")
+                logger.warning("serpapi_failed", error=str(e))
+
+        # 5b. Apify contact scraper (paid)
+        if settings.APIFY_API_KEY and domain and not _has_hr_contact(all_contacts):
             try:
                 apify_contacts = await _apify_contact_scraper(
                     company, domain, settings.APIFY_API_KEY
                 )
                 all_contacts.extend(apify_contacts)
-                if apify_contacts:
-                    logger.info("apify_found", company=company,
-                                count=len(apify_contacts))
             except Exception as e:
                 api_errors.append(f"Apify: {e}")
                 logger.warning("apify_failed", error=str(e))
 
+        # 5c. Prospeo (paid)
         if settings.PROSPEO_API_KEY and domain and not _has_hr_contact(all_contacts):
             try:
                 p = await _search_prospeo(company, domain, settings.PROSPEO_API_KEY)
@@ -245,9 +258,7 @@ async def _find_hr_contact_impl(
     # ── Deduplicate collected contacts ─────────────────────────────────────
     all_contacts = _deduplicate(all_contacts)
 
-    # ── 8. Pattern prefix fallback + Hunter Email Verifier ────────────────
-    # Build pattern emails; verify top ones via Hunter when available.
-    # Patterns are always appended last so real contacts sort first.
+    # ── 6. Pattern prefix fallback + Hunter Email Verifier ────────────────
     if domain:
         pattern_contacts = await _build_pattern_fallback(
             domain,
@@ -716,6 +727,202 @@ async def _scrape_company_website(company: str, domain: str) -> Optional[dict]:
         "verified":   verified,
         "source":     "website_scrape",
     }
+
+
+# ── Strategy: SMTP Pattern Verification (FREE) ──────────────────────────────
+
+# HR-relevant prefixes to verify via SMTP, ordered by likelihood
+_SMTP_HR_PREFIXES = [
+    ("hr",         "HR Department",      "hr"),
+    ("careers",    "Careers Team",       "hr"),
+    ("recruiting", "Recruiting Team",    "hr"),
+    ("talent",     "Talent Acquisition", "hr"),
+    ("jobs",       "Jobs Team",          "hr"),
+    ("hiring",     "Hiring Team",        "hr"),
+    ("people",     "People & Culture",   "hr"),
+    ("info",       "General Enquiries",  "generic"),
+    ("contact",    "Contact",            "generic"),
+]
+
+
+async def _smtp_verify_patterns(domain: str) -> list[dict]:
+    """Generate hr@/careers@/etc. pattern emails and verify via SMTP RCPT TO.
+
+    This is 100% free — it only opens an SMTP connection and checks whether
+    the server accepts the recipient, without actually sending mail.
+    Returns only addresses confirmed deliverable (RCPT TO → 250).
+    """
+    import smtplib
+    import dns.resolver
+
+    # First check MX records exist at all
+    try:
+        mx_records = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: dns.resolver.resolve(domain, "MX")
+        )
+        mx_list = sorted(mx_records, key=lambda r: r.preference)
+        mx_host = str(mx_list[0].exchange).rstrip(".")
+    except Exception:
+        return []  # No MX records — domain doesn't accept email
+
+    verified: list[dict] = []
+
+    def _check_email(email: str) -> bool:
+        """Synchronous SMTP RCPT TO check (runs in executor)."""
+        try:
+            with smtplib.SMTP(mx_host, 25, timeout=5) as smtp:
+                smtp.helo("verify.local")
+                smtp.mail("verify@verify.local")
+                code, _ = smtp.rcpt(email)
+                return code == 250
+        except Exception:
+            return False
+
+    # Run all prefix checks concurrently via thread pool
+    loop = asyncio.get_event_loop()
+    tasks = []
+    for prefix, label, role in _SMTP_HR_PREFIXES:
+        email = f"{prefix}@{domain}"
+        tasks.append((email, label, role, loop.run_in_executor(None, _check_email, email)))
+
+    for email, label, role, task in tasks:
+        try:
+            is_valid = await asyncio.wait_for(task, timeout=8)
+            if is_valid:
+                verified.append({
+                    "email": email,
+                    "name": label,
+                    "title": label,
+                    "role": role if role != "generic" else "pattern",
+                    "confidence": 75,
+                    "verified": True,
+                    "source": "smtp_verified",
+                })
+        except (asyncio.TimeoutError, Exception):
+            continue
+
+    return verified
+
+
+# ── Strategy: Serper.dev Google HR Search (2500 free/month) ──────────────────
+
+async def _search_serper_hr(company: str, domain: str, serper_key: str) -> list[dict]:
+    """Find HR contacts using Serper.dev Google Search API.
+
+    Three queries:
+      1. Direct email harvest — look for literal hr@/careers@ in indexed pages
+      2. LinkedIn people search — find HR/recruiter names → construct email patterns
+      3. Contact page discovery — find company contact/about pages with emails
+    """
+    import httpx
+
+    EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+    bare = domain.lstrip("www.")
+    headers = {"X-API-KEY": serper_key, "Content-Type": "application/json"}
+    found_contacts: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # ── Query 1: Direct email harvest ─────────────────────────────────
+        try:
+            resp = await client.post("https://google.serper.dev/search", headers=headers,
+                json={"q": f'"{company}" "hr@" OR "careers@" OR "recruiting@" OR "talent@" email', "num": 10})
+            if resp.status_code == 200:
+                data = resp.json()
+                for result in data.get("organic", []):
+                    text = f"{result.get('title', '')} {result.get('snippet', '')} {result.get('link', '')}"
+                    for email in EMAIL_RE.findall(text):
+                        el = email.lower().rstrip(".")
+                        em_domain = el.split("@")[1] if "@" in el else ""
+                        if bare not in em_domain and em_domain not in bare:
+                            continue
+                        local = el.split("@")[0]
+                        if any(b in local for b in ("noreply", "no-reply", "bounce", "spam", "unsubscribe")):
+                            continue
+                        role = _classify_role("", "", "", local)
+                        found_contacts.append({
+                            "email": el, "name": "", "title": "",
+                            "role": role, "confidence": 70,
+                            "verified": False, "source": "serper_direct",
+                        })
+        except Exception as e:
+            logger.debug("serper_direct_failed", error=str(e))
+
+        # ── Query 2: LinkedIn people search ───────────────────────────────
+        try:
+            resp = await client.post("https://google.serper.dev/search", headers=headers,
+                json={"q": f'site:linkedin.com/in "{company}" "talent acquisition" OR "HR manager" OR "recruiter"', "num": 5})
+            if resp.status_code == 200:
+                data = resp.json()
+                for result in data.get("organic", []):
+                    title = result.get("title", "")
+                    name_part = title.split(" - ")[0].strip() if " - " in title else ""
+                    if not name_part or len(name_part.split()) < 2:
+                        continue
+                    parts = name_part.lower().split()
+                    first, last = parts[0], parts[-1]
+                    first_c = re.sub(r"[^a-z]", "", first)
+                    last_c = re.sub(r"[^a-z]", "", last)
+                    if not first_c or not last_c:
+                        continue
+                    job_title = ""
+                    if " - " in title:
+                        rest = title.split(" - ", 1)[1]
+                        job_title = rest.split(" at ")[0].strip() if " at " in rest else rest
+                    for candidate in [
+                        f"{first_c}.{last_c}@{bare}",
+                        f"{first_c[0]}{last_c}@{bare}",
+                        f"{first_c}@{bare}",
+                    ]:
+                        found_contacts.append({
+                            "email": candidate, "name": name_part,
+                            "title": job_title or "HR", "role": "hr",
+                            "confidence": 55, "verified": False,
+                            "source": "serper_linkedin",
+                        })
+        except Exception as e:
+            logger.debug("serper_linkedin_failed", error=str(e))
+
+        # ── Query 3: Contact page email harvest ───────────────────────────
+        try:
+            resp = await client.post("https://google.serper.dev/search", headers=headers,
+                json={"q": f'site:{bare} contact OR about OR team email', "num": 5})
+            if resp.status_code == 200:
+                data = resp.json()
+                for result in data.get("organic", []):
+                    text = f"{result.get('title', '')} {result.get('snippet', '')}"
+                    for email in EMAIL_RE.findall(text):
+                        el = email.lower().rstrip(".")
+                        em_domain = el.split("@")[1] if "@" in el else ""
+                        if bare not in em_domain and em_domain not in bare:
+                            continue
+                        local = el.split("@")[0]
+                        if any(b in local for b in ("noreply", "bounce", "spam")):
+                            continue
+                        role = _classify_role("", "", "", local)
+                        found_contacts.append({
+                            "email": el, "name": "", "title": "",
+                            "role": role, "confidence": 65,
+                            "verified": False, "source": "serper_contact",
+                        })
+        except Exception as e:
+            logger.debug("serper_contact_failed", error=str(e))
+
+    # Deduplicate and verify MX
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for c in found_contacts:
+        if c["email"] not in seen:
+            seen.add(c["email"])
+            unique.append(c)
+
+    verified: list[dict] = []
+    for c in unique[:15]:
+        if await _verify_email_domain(c["email"]):
+            verified.append({**c, "verified": True, "confidence": c["confidence"] + 10})
+        else:
+            verified.append(c)
+
+    return verified
 
 
 # ── Strategy: Apify Contact Info Scraper ─────────────────────────────────────
