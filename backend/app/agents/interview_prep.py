@@ -13,15 +13,20 @@ _LLM_TIMEOUT = 90.0
 def _extract_json(raw: str) -> dict:
     """Extract JSON from LLM response, handles markdown fences + minor truncation."""
     text = raw.strip()
+    # Strip markdown code fences
     if "```" in text:
         parts = text.split("```")
         for part in parts:
-            candidate = part.lstrip("json").strip()
+            candidate = part.lstrip("json").lstrip("JSON").strip()
             if candidate.startswith("{"):
                 text = candidate
                 break
     if text.endswith("```"):
         text = text[:-3].strip()
+    # Strip leading non-JSON text (e.g. "Here is the JSON:\n{...")
+    brace_idx = text.find("{")
+    if brace_idx > 0:
+        text = text[brace_idx:]
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -45,11 +50,10 @@ async def _call_llm(llm, prompt: str, label: str) -> dict:
         return _extract_json(content)
     except asyncio.TimeoutError:
         logger.error("interview_prep_timeout", label=label, timeout=_LLM_TIMEOUT)
-        # M10 fix: Return empty arrays for expected keys instead of {} to prevent caller crashes
-        return {"technical_questions": [], "behavioral_questions": [], "questions_to_ask": []}
+        return {}
     except Exception as e:
         logger.error("interview_prep_error", label=label, error=str(e))
-        return {"technical_questions": [], "behavioral_questions": [], "questions_to_ask": []}
+        return {}
 
 
 async def generate_interview_prep(
@@ -337,8 +341,136 @@ Return ONLY valid JSON."""
             "day_6": "Mock interview: get a friend or use Pramp/interviewing.io for a full mock session. Review and iterate.",
             "day_7": "Final prep: light review of your notes, prepare your questions to ask, pick your outfit, sleep by 10pm.",
         },
-        "technical_questions": part2.get("technical_questions") or [],
-        "behavioral_questions": part2.get("behavioral_questions") or [],
+        "technical_questions": part2.get("technical_questions") or [
+            {
+                "question": f"Walk me through how you would design and implement a key feature described in this {job_title} role. What technologies would you choose and why?",
+                "answer": f"I would start by breaking down the requirements from the JD, identifying the core user stories, and mapping them to a technical architecture. For a {job_title} role, I'd consider the tech stack mentioned in the JD, evaluate trade-offs between consistency and availability, and propose an iterative implementation plan with clear milestones.",
+                "difficulty": "medium",
+                "topic": "System Architecture & Design",
+                "follow_up": "What would you change if the system needed to handle 100x the expected traffic?"
+            },
+            {
+                "question": f"Describe a production debugging scenario relevant to the {job_title} stack. A critical service is experiencing intermittent 500 errors under load — walk me through your debugging process.",
+                "answer": "First, I'd check monitoring dashboards for error rate patterns (time-based, endpoint-specific). Then examine logs for stack traces, check resource utilization (CPU, memory, connections). I'd look at recent deployments, check database query performance, and verify external service health. I'd use distributed tracing to identify the bottleneck, then apply targeted fixes with canary deployment.",
+                "difficulty": "hard",
+                "topic": "Production Debugging",
+                "follow_up": "The issue only happens during peak hours and disappears when you add more instances. What's your hypothesis?"
+            },
+            {
+                "question": "Explain the trade-offs between SQL and NoSQL databases. When would you choose one over the other for a new service?",
+                "answer": "SQL databases (PostgreSQL, MySQL) excel at complex queries, ACID transactions, and structured data with relationships. NoSQL (MongoDB, DynamoDB, Redis) excels at horizontal scaling, flexible schemas, and specific access patterns. I'd choose SQL for transactional systems with complex joins, and NoSQL for high-throughput read/write with simple access patterns. Often the best approach is polyglot persistence — using both.",
+                "difficulty": "easy",
+                "topic": "Database Design",
+                "follow_up": "Your SQL database is hitting performance limits at 10K writes/second. What are your options before migrating to NoSQL?"
+            },
+            {
+                "question": "How do you ensure code quality and prevent regressions in a fast-moving team? Describe your testing strategy.",
+                "answer": "I use a testing pyramid: unit tests (70%) for business logic, integration tests (20%) for API contracts and DB queries, and E2E tests (10%) for critical user flows. I enforce CI/CD with automated test runs, code review with at least one approval, and coverage thresholds. I also advocate for feature flags to decouple deployment from release.",
+                "difficulty": "easy",
+                "topic": "Testing & CI/CD",
+                "follow_up": "A critical bug shipped to production despite passing all tests. How do you prevent this class of bug in the future?"
+            },
+            {
+                "question": "Describe how you would implement authentication and authorization for a multi-tenant SaaS application.",
+                "answer": "I'd use JWT tokens with short expiry for authentication, refresh tokens stored securely (httpOnly cookies). For authorization, implement RBAC with tenant isolation at the database level (row-level security or tenant_id foreign keys). Use middleware to validate tokens, extract tenant context, and enforce permissions. Add rate limiting per tenant and audit logging for sensitive operations.",
+                "difficulty": "medium",
+                "topic": "Security & Auth",
+                "follow_up": "A customer reports they can see another tenant's data. How do you investigate and fix this?"
+            },
+            {
+                "question": "You need to process 1 million records from an external API daily. Design the data pipeline.",
+                "answer": "I'd use a scheduled job (cron/Airflow) to paginate through the API with rate limiting. Process records in batches (1000 at a time) using async workers. Store raw data in a staging table, validate and transform, then upsert into the production table. Add idempotency keys to handle restarts. Monitor with alerts on record counts, error rates, and processing duration.",
+                "difficulty": "medium",
+                "topic": "Data Engineering",
+                "follow_up": "The API starts returning inconsistent data mid-pipeline. How do you handle partial failures?"
+            },
+            {
+                "question": "Explain how you would optimize a slow API endpoint that currently takes 5 seconds to respond.",
+                "answer": "First, profile to identify the bottleneck: database queries (add indexes, optimize N+1), external API calls (parallelize with asyncio/Promise.all), computation (cache results in Redis). Add database query logging, use EXPLAIN ANALYZE. Consider pagination if returning large datasets. Add response caching with appropriate TTL. Measure before and after each optimization.",
+                "difficulty": "medium",
+                "topic": "Performance Optimization",
+                "follow_up": "After optimization it's down to 200ms, but P99 is still 3 seconds. What's causing the tail latency?"
+            },
+            {
+                "question": f"How would you handle a situation where you need to make a breaking API change that affects multiple downstream consumers?",
+                "answer": "I'd use API versioning (URL path or header-based). Deploy the new version alongside the old one. Communicate the deprecation timeline to consumers. Provide a migration guide and SDK updates. Monitor old version usage and set a sunset date. During transition, both versions run simultaneously. Use feature flags to gradually shift traffic.",
+                "difficulty": "hard",
+                "topic": "API Design & Versioning",
+                "follow_up": "Two major consumers refuse to migrate before your deadline. How do you handle this?"
+            },
+            {
+                "question": "Describe the CAP theorem and how it applies to designing a distributed system for this role.",
+                "answer": "CAP states a distributed system can only guarantee two of: Consistency (all nodes see the same data), Availability (every request gets a response), Partition tolerance (system works despite network splits). In practice, partitions happen, so you choose CP (strong consistency, may reject requests) or AP (always available, may serve stale data). Most modern systems use eventual consistency with conflict resolution.",
+                "difficulty": "hard",
+                "topic": "Distributed Systems",
+                "follow_up": "Your system chose AP but a customer complains about stale reads causing financial discrepancies. How do you solve this without switching to CP?"
+            },
+            {
+                "question": "You inherit a legacy codebase with no tests, poor documentation, and tight deadlines. What's your strategy?",
+                "answer": "First, understand the critical paths by reading logs and monitoring. Add characterization tests around the most critical/risky code. Introduce a 'boy scout rule' — improve any code you touch. Set up CI/CD if missing. Document architectural decisions as you discover them. Prioritize refactoring by risk and frequency of change. Never do a big-bang rewrite — strangle the monolith incrementally.",
+                "difficulty": "hard",
+                "topic": "Legacy Code & Refactoring",
+                "follow_up": "Management wants a full rewrite in 3 months. How do you push back constructively?"
+            },
+        ],
+        "behavioral_questions": part2.get("behavioral_questions") or [
+            {
+                "question": "Tell me about a time you had to make a critical technical decision under pressure with incomplete information. What was the outcome?",
+                "answer": "In my previous role, we had a production outage affecting 10K users. I had to decide between a quick rollback (losing 2 hours of user data) or a forward fix (risky, could take 1-3 hours). I chose the forward fix because the data loss would violate our SLA. I isolated the root cause in 45 minutes, deployed a targeted fix, and we were back to normal in 1 hour. I then led a blameless postmortem and we added circuit breakers to prevent recurrence.",
+                "framework": "STAR",
+                "competency": "technical judgment",
+                "why_asked": "Tests decision-making under pressure. Strong answers show structured reasoning and calculated risk-taking. Weak answers show either reckless speed or analysis paralysis."
+            },
+            {
+                "question": "Describe a situation where you disagreed with a senior engineer or manager on a technical approach. How did you handle it?",
+                "answer": "My tech lead wanted to use a microservices architecture for a new feature. I believed a modular monolith was better given our 4-person team. I wrote a one-page trade-off analysis comparing both approaches on 5 criteria: development speed, operational complexity, team size, deployment frequency, and scaling needs. After reviewing it together, we agreed on the modular monolith with clear service boundaries for future extraction. The feature shipped 3 weeks ahead of schedule.",
+                "framework": "STAR",
+                "competency": "influence without authority",
+                "why_asked": "Tests ability to advocate for ideas respectfully with evidence. Strong answers show data-driven persuasion. Weak answers show either giving in immediately or creating conflict."
+            },
+            {
+                "question": "Tell me about a project where the requirements changed significantly mid-development. How did you adapt?",
+                "answer": "We were 60% through building a batch processing system when the business pivoted to needing real-time processing. I re-scoped the project: identified which components could be reused (data models, validation logic — about 40% of the work), proposed a streaming architecture using the same core transforms, and negotiated a 2-week extension instead of the 6 weeks a full restart would need. We delivered on the revised timeline and the real-time system processed 50K events/minute.",
+                "framework": "STAR",
+                "competency": "ambiguity",
+                "why_asked": "Tests adaptability and pragmatism. Strong answers show reuse of existing work and proactive re-planning. Weak answers show frustration or starting over from scratch."
+            },
+            {
+                "question": "Give an example of when you identified and fixed a systemic problem that others had been working around.",
+                "answer": "Our team spent 30 minutes each Monday manually reconciling deployment configs across 3 environments. No one had flagged it because 'it's always been that way.' I built a config-as-code pipeline with environment variable injection and automated drift detection. Setup took 2 days. It eliminated 26 person-hours/month of manual work and prevented 3 config-related incidents in the first quarter.",
+                "framework": "STAR",
+                "competency": "ownership",
+                "why_asked": "Tests proactive problem-solving and initiative. Strong answers quantify the impact. Weak answers describe fixing only their own problems."
+            },
+            {
+                "question": "Describe a time you had to collaborate with a difficult team member or stakeholder to deliver a project.",
+                "answer": "A product manager kept changing requirements mid-sprint, causing rework. Instead of escalating, I proposed a structured process: a brief requirements lock 2 days before sprint start, with a change request process for mid-sprint changes that included impact assessment. I framed it as helping them get better estimates and fewer surprises. They agreed, and our sprint completion rate went from 60% to 90% over 3 sprints.",
+                "framework": "STAR",
+                "competency": "cross-team collaboration",
+                "why_asked": "Tests interpersonal skills and process thinking. Strong answers show empathy and systemic solutions. Weak answers blame the other person."
+            },
+            {
+                "question": "Tell me about a time you failed or made a significant mistake at work. What did you learn?",
+                "answer": "I deployed a database migration without testing the rollback procedure. The migration had a bug that corrupted an index, and the rollback script didn't account for the partial state. We had 2 hours of degraded performance. I learned three things: always test rollback scripts in staging, use blue-green deployments for risky migrations, and add pre-deployment checklists. I documented these as team standards and we haven't had a migration incident since.",
+                "framework": "STAR",
+                "competency": "leadership",
+                "why_asked": "Tests self-awareness and growth mindset. Strong answers show specific lessons and systemic improvements. Weak answers minimize the failure or blame external factors."
+            },
+            {
+                "question": "How do you prioritize when you have multiple urgent requests from different stakeholders simultaneously?",
+                "answer": "I use an impact-urgency matrix. First, I assess true urgency (SLA breach? revenue impact? can it wait 24h?). Then I communicate transparently: 'I can do A today and B tomorrow, or both by Wednesday at 80% quality. Which do you prefer?' I've found that most 'urgent' requests can wait 24 hours when you surface the trade-offs explicitly. In my last role, this approach reduced my context-switching by 40% and improved my delivery consistency.",
+                "framework": "STAR",
+                "competency": "trade-off decisions",
+                "why_asked": "Tests prioritization and communication skills. Strong answers show a framework and transparent communication. Weak answers say 'I just work harder.'"
+            },
+            {
+                "question": "Describe a time you mentored someone or helped a team member grow technically.",
+                "answer": "A junior developer was struggling with code reviews — their PRs would go through 4-5 revision cycles. Instead of just fixing their code, I set up weekly 30-minute pairing sessions where we'd review their PR together before submission. I taught them to self-review using a checklist I created. After 6 weeks, their first-pass approval rate went from 20% to 75%, and they started helping other juniors with the same checklist.",
+                "framework": "STAR",
+                "competency": "conflict resolution",
+                "why_asked": "Tests ability to invest in others and multiply team output. Strong answers show patience, systematic teaching, and measurable improvement. Weak answers describe just answering questions."
+            },
+        ],
         "situational_questions": part3.get("situational_questions") or [],
         "cultural_questions": part3.get("cultural_questions") or [
             {
