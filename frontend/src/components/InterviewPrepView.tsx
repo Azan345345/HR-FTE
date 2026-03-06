@@ -15,6 +15,8 @@ import {
 } from "@/services/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface InterviewPrepViewProps {
     focusedJobId?: string | null;
@@ -105,7 +107,9 @@ function QuestionCard({ q, index, color }: { q: any; index: number; color: strin
                                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Model Answer</span>
                                         <CopyButton text={answer} />
                                     </div>
-                                    <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{answer}</p>
+                                    <div className="prose prose-xs prose-slate max-w-none prose-p:my-1 prose-p:leading-relaxed prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:text-sm prose-headings:font-bold prose-code:bg-slate-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[11px] prose-pre:bg-slate-900 prose-pre:rounded-xl prose-pre:text-[11px] text-xs text-slate-700">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
+                                    </div>
                                 </div>
                             )}
                             {q.follow_up && (
@@ -156,7 +160,9 @@ function SystemDesignCard({ q, index }: { q: any; index: number }) {
                             {q.approach && (
                                 <div>
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Architecture Approach</span>
-                                    <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{q.approach}</p>
+                                    <div className="prose prose-xs prose-slate max-w-none prose-p:my-1 prose-p:leading-relaxed prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:text-sm prose-headings:font-bold prose-code:bg-slate-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[11px] prose-pre:bg-slate-900 prose-pre:rounded-xl prose-pre:text-[11px] text-xs text-slate-700">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{q.approach}</ReactMarkdown>
+                                    </div>
                                 </div>
                             )}
                             {q.evaluation_criteria && (
@@ -372,12 +378,16 @@ function CoachChatPanel({ prepId, jobTitle, company }: { prepId: string; jobTitl
                                     ? <Bot size={12} className="text-primary" />
                                     : <User2 size={12} className="text-slate-600" />}
                             </div>
-                            <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap ${
+                            <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-xs leading-relaxed ${
                                 msg.role === "assistant"
                                     ? "bg-slate-50 border border-slate-100 text-slate-700 rounded-tl-sm"
-                                    : "bg-primary text-white rounded-tr-sm"
+                                    : "bg-primary text-white rounded-tr-sm whitespace-pre-wrap"
                             }`}>
-                                {msg.content}
+                                {msg.role === "assistant" ? (
+                                    <div className="prose prose-xs prose-slate max-w-none prose-p:my-1 prose-p:leading-relaxed prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:text-sm prose-headings:font-bold prose-a:text-primary prose-code:bg-slate-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[11px] prose-pre:bg-slate-900 prose-pre:rounded-xl prose-pre:text-[11px] text-xs">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                    </div>
+                                ) : msg.content}
                             </div>
                         </motion.div>
                     ))}

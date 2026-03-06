@@ -139,57 +139,76 @@ Return ONLY valid JSON — no markdown, no explanation:
 }}"""
 
     # ── Prompt 2: Technical + Behavioral ────────────────────────────────────
-    p2 = f"""You are a world-class interview coach. Generate questions for:
+    p2 = f"""You are a senior FAANG/MIT-caliber interview coach who designs questions for top-tier companies (Google L5+, Meta E5+, Amazon SDE3, Apple ICT4, Stripe, Jane Street).
 
 ROLE: {job_title} at {company}
 JOB DESC: {desc_snippet}
 {cv_context}
 
+CRITICAL RULES for question quality:
+- Every question MUST be directly derived from the JD technologies, not generic CS trivia
+- Technical questions must test deep understanding, not textbook definitions — ask "why" and "what happens when", not "what is"
+- Include production-scale failure scenarios: "Your service is returning 5% stale reads — walk me through debugging this"
+- Hard questions should require synthesizing multiple concepts (e.g. concurrency + caching + consistency)
+- Behavioral answers must include specific numbers, timelines, and outcomes — not vague stories
+- Follow-ups should be adversarial: "Now what if the data doesn't fit in memory?" or "What breaks at 10x scale?"
+
 Return ONLY valid JSON:
 {{
   "technical_questions": [
     {{
-      "question": "specific question tied to the JD",
-      "answer": "detailed model answer with code snippet if relevant, edge cases, tradeoffs",
+      "question": "deep, specific question tied to the JD — not a definition, but a scenario that tests real understanding",
+      "answer": "detailed model answer covering the WHY, tradeoffs, edge cases, and production gotchas. Include code if relevant.",
       "difficulty": "easy|medium|hard",
-      "topic": "React hooks | SQL optimization | etc.",
-      "follow_up": "harder follow-up question"
+      "topic": "specific tech from the JD",
+      "follow_up": "adversarial follow-up that raises the complexity (scale, failure, constraint change)"
     }}
   ],
   "behavioral_questions": [
     {{
-      "question": "STAR behavioral question probing a competency",
-      "answer": "fully written STAR answer referencing specific projects from CV if provided",
+      "question": "probing behavioral question that cannot be answered with a rehearsed generic story",
+      "answer": "STAR answer with specific metrics, timeline, team size, and quantified outcome",
       "framework": "STAR",
-      "competency": "ownership | leadership | conflict resolution | etc.",
-      "why_asked": "what the interviewer is testing"
+      "competency": "ownership | leadership | conflict resolution | technical judgment | influence without authority | ambiguity | trade-off decisions | cross-team collaboration",
+      "why_asked": "what the interviewer is really evaluating and what a weak vs strong answer looks like"
     }}
   ]
 }}
 
-Generate EXACTLY 10 technical_questions (mix easy/medium/hard covering all JD areas) and EXACTLY 8 behavioral_questions (each testing a different competency).
+Generate EXACTLY 10 technical_questions:
+- 2 easy (fundamentals that MUST still connect to the JD stack)
+- 4 medium (multi-concept scenarios, debugging, design tradeoffs)
+- 4 hard (production failures, scale problems, adversarial constraints)
+
+Generate EXACTLY 8 behavioral_questions (each probing a DIFFERENT competency — no repeats).
 Return ONLY valid JSON."""
 
     # ── Prompt 3: Situational + Cultural ─────────────────────────────────────
-    p3 = f"""You are a world-class interview coach. Generate questions for:
+    p3 = f"""You are a senior FAANG/MIT-caliber interview coach.
 
 ROLE: {job_title} at {company}
 JOB DESC: {desc_snippet}
+
+CRITICAL RULES:
+- Situational questions must present realistic, high-stakes dilemmas with NO obvious right answer — the interviewer is testing judgment and reasoning process, not memorized answers
+- Include scenarios involving: deadline pressure vs quality, conflicting stakeholder demands, ethical gray areas, technical debt vs feature velocity, handling a team member's underperformance
+- Cultural questions must reflect {company}'s ACTUAL values (infer from JD language) — not generic "tell me about teamwork"
+- Sample answers must demonstrate self-awareness, nuance, and willingness to make hard trade-offs
 
 Return ONLY valid JSON:
 {{
   "situational_questions": [
     {{
-      "question": "realistic hypothetical scenario for this exact role at {company}",
-      "answer": "step-by-step reasoning with decision process",
-      "key_principle": "core insight the interviewer wants to see"
+      "question": "high-stakes scenario with competing priorities, no clear right answer, specific to this role at {company}",
+      "answer": "structured reasoning: acknowledge the tension, state your framework for deciding, explain the trade-off you'd make and why, describe how you'd mitigate the downside",
+      "key_principle": "the decision-making principle the interviewer wants to see demonstrated"
     }}
   ],
   "cultural_questions": [
     {{
-      "question": "culture/values question specific to {company}",
-      "what_they_want": "what {company} actually looks for",
-      "sample_answer": "authentic answer aligned to {company} values"
+      "question": "culture/values question specific to {company}'s actual values (inferred from JD)",
+      "what_they_want": "the specific signal {company} is looking for — what separates a strong vs weak answer",
+      "sample_answer": "authentic answer showing self-awareness and alignment, with a concrete example"
     }}
   ]
 }}
@@ -198,34 +217,42 @@ Generate EXACTLY 8 situational_questions and EXACTLY 6 cultural_questions.
 Return ONLY valid JSON."""
 
     # ── Prompt 4: System Design + Coding ─────────────────────────────────────
-    p4 = f"""You are a world-class interview coach. Generate technical challenges for:
+    p4 = f"""You are a senior FAANG/MIT-caliber interview coach who designs challenges for Google, Meta, Stripe, and Jane Street level interviews.
 
 ROLE: {job_title} at {company}
 JOB DESC: {desc_snippet}
+
+CRITICAL RULES:
+- System design questions must be RELEVANT to what {company} actually builds (infer from JD) — not random textbook systems
+- Include scale numbers (QPS, data volume, latency requirements) in the problem statement
+- Coding challenges must range from medium to hard LeetCode difficulty — NO easy problems like Two Sum or palindrome check
+- Each coding problem must require algorithmic insight (not just API knowledge): dynamic programming, graph algorithms, sliding window, monotonic stack, union-find, or similar
+- Solutions must be in the most relevant language for this role based on the JD
+- Include optimal AND suboptimal approaches with clear Big-O comparison
 
 Return ONLY valid JSON:
 {{
   "system_design_questions": [
     {{
-      "question": "system to design relevant to the role (adapt complexity to seniority)",
-      "approach": "detailed architecture answer: components, DB schema, caching, API design, scale considerations",
-      "evaluation_criteria": "what distinguishes a strong vs weak answer",
-      "common_mistakes": ["mistake 1", "mistake 2", "mistake 3"]
+      "question": "system relevant to {company}'s domain, with specific scale numbers (e.g. '10M DAU, 50K writes/sec, p99 < 200ms')",
+      "approach": "detailed architecture: components, data model, API design, caching strategy, consistency model, failure handling, monitoring. Include specific technology choices with justification.",
+      "evaluation_criteria": "what distinguishes a strong candidate (mentions X, Y, Z) from a weak one (misses A, B, C)",
+      "common_mistakes": ["mistake 1 with explanation of why it fails", "mistake 2", "mistake 3"]
     }}
   ],
   "coding_challenges": [
     {{
-      "problem": "problem statement with concrete example input/output",
-      "optimal_solution": "commented code in the most relevant language for this role",
-      "time_complexity": "O(...)",
-      "space_complexity": "O(...)",
-      "brute_force_approach": "naive solution and why it is suboptimal",
-      "edge_cases": ["edge case 1", "edge case 2", "edge case 3"]
+      "problem": "clear problem statement with concrete input/output examples. Medium-to-hard difficulty requiring algorithmic insight.",
+      "optimal_solution": "fully commented code in the role's primary language with clear variable names",
+      "time_complexity": "O(...) with explanation",
+      "space_complexity": "O(...) with explanation",
+      "brute_force_approach": "naive solution, its complexity, and exactly why it's too slow",
+      "edge_cases": ["non-obvious edge case 1", "edge case 2", "edge case 3"]
     }}
   ]
 }}
 
-Generate EXACTLY 4 system_design_questions and EXACTLY 3 coding_challenges.
+Generate EXACTLY 4 system_design_questions and EXACTLY 5 coding_challenges (2 medium, 2 hard, 1 very hard).
 Return ONLY valid JSON."""
 
     logger.info("interview_prep_start", job=job_title, company=company)
@@ -389,28 +416,44 @@ Return ONLY valid JSON."""
         ],
         "coding_challenges": part4.get("coding_challenges") or [
             {
-                "problem": "Given an array of integers, return indices of the two numbers that add up to a target. Example: nums=[2,7,11,15], target=9 → [0,1]",
-                "optimal_solution": "def two_sum(nums, target):\n    seen = {}  # value -> index\n    for i, n in enumerate(nums):\n        complement = target - n\n        if complement in seen:\n            return [seen[complement], i]\n        seen[n] = i\n    return []",
-                "time_complexity": "O(n)",
-                "space_complexity": "O(n)",
-                "brute_force_approach": "Nested loops checking every pair: O(n²) time, O(1) space. Too slow for large inputs.",
-                "edge_cases": ["No solution exists", "Same element used twice", "Negative numbers", "Target is 0"],
+                "problem": "Given an array of integers and a window size k, return the maximum value in each sliding window. Example: nums=[1,3,-1,-3,5,3,6,7], k=3 → [3,3,5,5,6,7]",
+                "optimal_solution": "from collections import deque\ndef max_sliding_window(nums, k):\n    dq = deque()  # stores indices, front is always max\n    result = []\n    for i, n in enumerate(nums):\n        # Remove indices outside window\n        while dq and dq[0] < i - k + 1:\n            dq.popleft()\n        # Remove smaller elements from back\n        while dq and nums[dq[-1]] < n:\n            dq.pop()\n        dq.append(i)\n        if i >= k - 1:\n            result.append(nums[dq[0]])\n    return result",
+                "time_complexity": "O(n) — each element is pushed and popped at most once",
+                "space_complexity": "O(k) for the deque",
+                "brute_force_approach": "For each window position, scan all k elements to find max: O(n*k). Too slow when k is large.",
+                "edge_cases": ["k equals array length (single window)", "All elements identical", "Strictly decreasing array", "k = 1 (return original array)"],
             },
             {
-                "problem": "Implement a function to check if a string is a valid palindrome, ignoring non-alphanumeric characters and case. Example: 'A man, a plan, a canal: Panama' → True",
-                "optimal_solution": "def is_palindrome(s):\n    cleaned = [c.lower() for c in s if c.isalnum()]\n    return cleaned == cleaned[::-1]",
-                "time_complexity": "O(n)",
-                "space_complexity": "O(n)",
-                "brute_force_approach": "Same approach — palindrome checking is inherently O(n). Two-pointer variant uses O(1) space: left/right pointers skipping non-alphanumeric chars.",
-                "edge_cases": ["Empty string (True)", "Single character (True)", "All punctuation (True)", "Mixed case"],
+                "problem": "Given a string s, find the length of the longest substring without repeating characters. Example: 'abcabcbb' → 3 ('abc'), 'pwwkew' → 3 ('wke')",
+                "optimal_solution": "def length_of_longest_substring(s):\n    char_index = {}  # char -> last seen index\n    max_len = 0\n    left = 0\n    for right, c in enumerate(s):\n        if c in char_index and char_index[c] >= left:\n            left = char_index[c] + 1\n        char_index[c] = right\n        max_len = max(max_len, right - left + 1)\n    return max_len",
+                "time_complexity": "O(n) — single pass with hash map",
+                "space_complexity": "O(min(n, alphabet_size))",
+                "brute_force_approach": "Check every substring for duplicates: O(n³) with nested loops + set check. O(n²) with optimized inner loop. Both too slow for n > 10⁴.",
+                "edge_cases": ["Empty string → 0", "All unique characters", "All same character → 1", "Unicode/special characters"],
             },
             {
-                "problem": "Given a binary tree, return its level-order traversal (BFS). Example: Tree [3,9,20,null,null,15,7] → [[3],[9,20],[15,7]]",
-                "optimal_solution": "from collections import deque\ndef level_order(root):\n    if not root: return []\n    result, queue = [], deque([root])\n    while queue:\n        level = []\n        for _ in range(len(queue)):\n            node = queue.popleft()\n            level.append(node.val)\n            if node.left: queue.append(node.left)\n            if node.right: queue.append(node.right)\n        result.append(level)\n    return result",
-                "time_complexity": "O(n)",
-                "space_complexity": "O(n) — queue holds at most one full level",
-                "brute_force_approach": "Recursive DFS with level tracking works but uses call stack (O(h) space). BFS with deque is cleaner for level-order.",
-                "edge_cases": ["Empty tree (return [])", "Single node", "Skewed tree (linear)", "Complete binary tree"],
+                "problem": "Implement LRU Cache with O(1) get and put operations. get(key) returns value or -1. put(key, value) inserts/updates and evicts least recently used if at capacity. Example: capacity=2, put(1,1), put(2,2), get(1)→1, put(3,3), get(2)→-1 (evicted)",
+                "optimal_solution": "class Node:\n    def __init__(self, k=0, v=0):\n        self.key, self.val = k, v\n        self.prev = self.next = None\n\nclass LRUCache:\n    def __init__(self, capacity):\n        self.cap = capacity\n        self.cache = {}  # key -> Node\n        self.head, self.tail = Node(), Node()\n        self.head.next, self.tail.prev = self.tail, self.head\n\n    def _remove(self, node):\n        node.prev.next, node.next.prev = node.next, node.prev\n\n    def _add_front(self, node):\n        node.next, node.prev = self.head.next, self.head\n        self.head.next.prev = node\n        self.head.next = node\n\n    def get(self, key):\n        if key not in self.cache: return -1\n        node = self.cache[key]\n        self._remove(node)\n        self._add_front(node)\n        return node.val\n\n    def put(self, key, value):\n        if key in self.cache:\n            self._remove(self.cache[key])\n        node = Node(key, value)\n        self._add_front(node)\n        self.cache[key] = node\n        if len(self.cache) > self.cap:\n            lru = self.tail.prev\n            self._remove(lru)\n            del self.cache[lru.key]",
+                "time_complexity": "O(1) for both get and put",
+                "space_complexity": "O(capacity) for hash map + doubly linked list",
+                "brute_force_approach": "Use a list and move accessed elements to front: O(n) per get/put due to shifting. OrderedDict works but interviewers want you to implement the data structure.",
+                "edge_cases": ["Capacity of 1", "Update existing key", "Get non-existent key", "Repeated puts of same key"],
+            },
+            {
+                "problem": "Given n non-negative integers representing an elevation map where the width of each bar is 1, compute how much water it can trap after raining. Example: height=[0,1,0,2,1,0,1,3,2,1,2,1] → 6",
+                "optimal_solution": "def trap(height):\n    left, right = 0, len(height) - 1\n    left_max = right_max = 0\n    water = 0\n    while left < right:\n        if height[left] < height[right]:\n            if height[left] >= left_max:\n                left_max = height[left]\n            else:\n                water += left_max - height[left]\n            left += 1\n        else:\n            if height[right] >= right_max:\n                right_max = height[right]\n            else:\n                water += right_max - height[right]\n            right -= 1\n    return water",
+                "time_complexity": "O(n) — single pass with two pointers",
+                "space_complexity": "O(1) — only two extra variables",
+                "brute_force_approach": "For each bar, find max height to its left and right, water at that position = min(left_max, right_max) - height[i]. Two-pass prefix max arrays: O(n) time but O(n) space.",
+                "edge_cases": ["Monotonically increasing (no water)", "Monotonically decreasing (no water)", "Single bar", "All same height (no water)"],
+            },
+            {
+                "problem": "Given a list of accounts where each element is [name, email1, email2, ...], merge accounts belonging to the same person (connected by shared emails). Example: [['John','a@','b@'],['John','b@','c@'],['Mary','d@']] → [['John','a@','b@','c@'],['Mary','d@']]",
+                "optimal_solution": "class UnionFind:\n    def __init__(self, n):\n        self.parent = list(range(n))\n        self.rank = [0] * n\n    def find(self, x):\n        while self.parent[x] != x:\n            self.parent[x] = self.parent[self.parent[x]]\n            x = self.parent[x]\n        return x\n    def union(self, a, b):\n        ra, rb = self.find(a), self.find(b)\n        if ra == rb: return\n        if self.rank[ra] < self.rank[rb]: ra, rb = rb, ra\n        self.parent[rb] = ra\n        if self.rank[ra] == self.rank[rb]: self.rank[ra] += 1\n\ndef accounts_merge(accounts):\n    from collections import defaultdict\n    uf = UnionFind(len(accounts))\n    email_to_id = {}\n    for i, acc in enumerate(accounts):\n        for email in acc[1:]:\n            if email in email_to_id:\n                uf.union(i, email_to_id[email])\n            email_to_id[email] = i\n    groups = defaultdict(set)\n    for email, i in email_to_id.items():\n        groups[uf.find(i)].add(email)\n    return [[accounts[i][0]] + sorted(emails) for i, emails in groups.items()]",
+                "time_complexity": "O(n * k * α(n)) where k is avg emails per account, α is inverse Ackermann (nearly O(1))",
+                "space_complexity": "O(n * k) for the email map and union-find",
+                "brute_force_approach": "BFS/DFS on email graph: build adjacency list of emails, find connected components. Same complexity but Union-Find is cleaner and preferred in interviews.",
+                "edge_cases": ["No shared emails (all separate)", "All accounts share one email (merge all)", "Same name but different people", "Single account with many emails"],
             },
         ],
     }
