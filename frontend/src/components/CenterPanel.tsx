@@ -643,6 +643,9 @@ interface CenterPanelProps {
   onSessionCreated: (id: string) => void;
 }
 
+// Session-level message cache — survives re-renders, avoids re-fetch on switch-back
+const _messageCache = new Map<string, ChatMessage[]>();
+
 export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelProps) {
   const [inputValue, setInputValue] = useState("");
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -698,25 +701,51 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
     setActionInFlight(null);
 
     if (activeSessionId) {
-      setMessages([]);
-      setIsLoadingHistory(true);
-      getChatHistory(activeSessionId)
-        .then((data) => {
-          const formattedMessages: ChatMessage[] = data.messages
-            .filter((m) => !(m.role === "user" && m.content.startsWith("__")))
-            .map((m) => ({
-              id: m.id,
-              role: m.role as "user" | "assistant",
-              content: m.content,
-              metadata: m.metadata ?? null,
-              time: m.created_at
-                ? new Date(m.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
-                : "Now",
-            }));
-          setMessages(formattedMessages);
-        })
-        .catch(() => {})
-        .finally(() => setIsLoadingHistory(false));
+      // Show cached messages instantly (no blank flash), then refresh in background
+      const cached = _messageCache.get(activeSessionId);
+      if (cached && cached.length > 0) {
+        setMessages(cached);
+        setIsLoadingHistory(false);
+        // Background refresh — update cache silently, only setMessages if still on same session
+        getChatHistory(activeSessionId)
+          .then((data) => {
+            const fresh: ChatMessage[] = data.messages
+              .filter((m) => !(m.role === "user" && m.content.startsWith("__")))
+              .map((m) => ({
+                id: m.id,
+                role: m.role as "user" | "assistant",
+                content: m.content,
+                metadata: m.metadata ?? null,
+                time: m.created_at
+                  ? new Date(m.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+                  : "Now",
+              }));
+            _messageCache.set(activeSessionId, fresh);
+            if (sessionIdRef.current === activeSessionId) setMessages(fresh);
+          })
+          .catch(() => {});
+      } else {
+        setMessages([]);
+        setIsLoadingHistory(true);
+        getChatHistory(activeSessionId)
+          .then((data) => {
+            const formattedMessages: ChatMessage[] = data.messages
+              .filter((m) => !(m.role === "user" && m.content.startsWith("__")))
+              .map((m) => ({
+                id: m.id,
+                role: m.role as "user" | "assistant",
+                content: m.content,
+                metadata: m.metadata ?? null,
+                time: m.created_at
+                  ? new Date(m.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+                  : "Now",
+              }));
+            _messageCache.set(activeSessionId, formattedMessages);
+            setMessages(formattedMessages);
+          })
+          .catch(() => {})
+          .finally(() => setIsLoadingHistory(false));
+      }
     } else {
       setMessages([]);
     }
@@ -724,6 +753,12 @@ export function CenterPanel({ activeSessionId, onSessionCreated }: CenterPanelPr
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Keep message cache in sync so switch-back is instant
+  useEffect(() => {
+    const sid = sessionIdRef.current;
+    if (sid && messages.length > 0) _messageCache.set(sid, messages);
   }, [messages]);
 
   // Listen for "apply-via-chat" events from JobsView — trigger __TAILOR_APPLY__ action

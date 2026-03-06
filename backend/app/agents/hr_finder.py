@@ -269,6 +269,12 @@ async def _find_hr_contact_impl(
             if pc["email"].lower() not in real_emails:
                 all_contacts.append(pc)
 
+    # ── 7. SMTP mailbox verification gate ────────────────────────────────
+    # Every email that hasn't been SMTP-verified yet gets checked now.
+    # This is the critical quality gate that prevents invalid emails from
+    # reaching the user. Emails that fail SMTP RCPT TO are dropped entirely.
+    all_contacts = await _smtp_verify_contacts(all_contacts, domain)
+
     # ── Sort contacts by priority ──────────────────────────────────────────
     _ROLE_PRIORITY = {"hr": 0, "management": 1, "executive": 2, "generic": 3, "pattern": 4}
     all_contacts.sort(key=lambda c: (
@@ -802,6 +808,179 @@ async def _smtp_verify_patterns(domain: str) -> list[dict]:
             continue
 
     return verified
+
+
+# ── SMTP mailbox verification gate ──────────────────────────────────────────
+
+async def _smtp_verify_contacts(contacts: list[dict], domain: str | None) -> list[dict]:
+    """Verify ALL collected contacts via SMTP RCPT TO before returning them.
+
+    This is the critical quality gate. Contacts that already passed SMTP
+    verification (source=smtp_verified) or Hunter verification (verified=True)
+    are kept as-is. All others are SMTP-checked:
+      - 250 response → verified, confidence boosted
+      - 550 (mailbox not found) → DROPPED
+      - accept-all server (250 for random address too) → kept with flag
+      - timeout/error → kept at lower confidence (benefit of doubt)
+
+    This prevents the #1 user complaint: sending to non-existent mailboxes.
+    """
+    if not contacts:
+        return []
+
+    import smtplib
+    import dns.resolver
+
+    # Separate already-verified from unverified
+    already_verified = []
+    to_check = []
+    for c in contacts:
+        if c.get("verified") and c.get("source") in (
+            "smtp_verified", "hunter_verified_pattern", "prospeo",
+        ):
+            already_verified.append(c)
+        else:
+            to_check.append(c)
+
+    if not to_check:
+        return already_verified
+
+    # Group by domain for efficient MX lookup (one MX lookup per domain)
+    domain_mx: dict[str, str | None] = {}
+    for c in to_check:
+        em_domain = c["email"].split("@")[1].lower()
+        if em_domain not in domain_mx:
+            domain_mx[em_domain] = None  # placeholder
+
+    # Resolve MX records for each unique domain
+    async def _get_mx(d: str) -> str | None:
+        try:
+            mx_records = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: dns.resolver.resolve(d, "MX")
+            )
+            mx_list = sorted(mx_records, key=lambda r: r.preference)
+            return str(mx_list[0].exchange).rstrip(".")
+        except Exception:
+            return None
+
+    mx_tasks = {d: _get_mx(d) for d in domain_mx}
+    for d, task in mx_tasks.items():
+        domain_mx[d] = await task
+
+    # Drop contacts whose domain has NO MX records at all
+    mx_valid = []
+    for c in to_check:
+        em_domain = c["email"].split("@")[1].lower()
+        if domain_mx.get(em_domain):
+            mx_valid.append(c)
+        else:
+            logger.debug("email_dropped_no_mx", email=c["email"], domain=em_domain)
+
+    if not mx_valid:
+        return already_verified
+
+    # Detect accept-all servers: probe a random address first
+    accept_all_domains: set[str] = set()
+    import random
+    import string
+
+    async def _check_accept_all(em_domain: str, mx_host: str) -> bool:
+        random_local = "".join(random.choices(string.ascii_lowercase, k=12))
+        probe = f"{random_local}@{em_domain}"
+
+        def _probe():
+            try:
+                with smtplib.SMTP(mx_host, 25, timeout=5) as smtp:
+                    smtp.helo("verify.local")
+                    smtp.mail("verify@verify.local")
+                    code, _ = smtp.rcpt(probe)
+                    return code == 250  # If random address accepted → accept-all
+            except Exception:
+                return False
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, _probe),
+                timeout=8,
+            )
+        except Exception:
+            return False
+
+    # Check accept-all for each domain (deduplicated)
+    checked_domains: set[str] = set()
+    for c in mx_valid:
+        em_domain = c["email"].split("@")[1].lower()
+        if em_domain not in checked_domains:
+            checked_domains.add(em_domain)
+            mx_host = domain_mx.get(em_domain)
+            if mx_host:
+                is_accept_all = await _check_accept_all(em_domain, mx_host)
+                if is_accept_all:
+                    accept_all_domains.add(em_domain)
+                    logger.debug("domain_accept_all", domain=em_domain)
+
+    # SMTP RCPT TO verification for each email
+    def _smtp_check(email: str, mx_host: str) -> int:
+        """Returns SMTP response code (250=ok, 550=not found, 0=error)."""
+        try:
+            with smtplib.SMTP(mx_host, 25, timeout=5) as smtp:
+                smtp.helo("verify.local")
+                smtp.mail("verify@verify.local")
+                code, _ = smtp.rcpt(email)
+                return code
+        except Exception:
+            return 0
+
+    verified_contacts: list[dict] = list(already_verified)
+    sem = asyncio.Semaphore(5)  # limit concurrent SMTP connections
+
+    async def _verify_one(c: dict) -> dict | None:
+        em_domain = c["email"].split("@")[1].lower()
+        mx_host = domain_mx.get(em_domain)
+        if not mx_host:
+            return None
+
+        # Accept-all domains: can't verify individual mailboxes, keep with flag
+        if em_domain in accept_all_domains:
+            return {**c, "verified": False, "accept_all": True,
+                    "confidence": min(c.get("confidence", 0), 60)}
+
+        async with sem:
+            try:
+                code = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, _smtp_check, c["email"], mx_host
+                    ),
+                    timeout=8,
+                )
+            except Exception:
+                code = 0
+
+        if code == 250:
+            # Mailbox confirmed to exist
+            return {**c, "verified": True,
+                    "confidence": max(c.get("confidence", 0), 80)}
+        elif code in (550, 551, 552, 553):
+            # Mailbox definitely does not exist — DROP
+            logger.info("email_dropped_smtp_reject", email=c["email"], code=code)
+            return None
+        else:
+            # Timeout, connection refused, greylisting, etc. — keep with lower confidence
+            return {**c, "confidence": min(c.get("confidence", 0), 50)}
+
+    tasks = []
+    for c in mx_valid:
+        tasks.append(_verify_one(c))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for r in results:
+        if isinstance(r, dict):
+            verified_contacts.append(r)
+
+    logger.info("smtp_gate_result",
+                input=len(contacts), output=len(verified_contacts),
+                dropped=len(contacts) - len(verified_contacts))
+    return verified_contacts
 
 
 # ── Strategy: Serper.dev Google HR Search (2500 free/month) ──────────────────

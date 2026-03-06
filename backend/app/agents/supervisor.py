@@ -1025,7 +1025,7 @@ async def _bg_hr_lookup(user_id: str, job_entries: list[dict]) -> None:
                         company_domain=domain or None,
                         user_id=user_id,
                     ),
-                    timeout=45,
+                    timeout=60,
                 )
 
                 if result.get("hr_email"):
