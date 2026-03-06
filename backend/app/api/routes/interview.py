@@ -68,7 +68,7 @@ async def create_interview_prep(
         job.description, current_user.id,
     )
 
-    return _to_response(prep)
+    return _to_response(prep, job)
 
 
 async def _save_prep(prep_id: str, prep_data: dict, status: str = "completed"):
@@ -182,14 +182,15 @@ async def list_preps(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List all interview preps."""
+    """List all interview preps with job info."""
     result = await db.execute(
-        select(InterviewPrep)
+        select(InterviewPrep, Job)
+        .outerjoin(Job, InterviewPrep.job_id == Job.id)
         .where(InterviewPrep.user_id == current_user.id)
         .order_by(InterviewPrep.created_at.desc())
     )
-    preps = result.scalars().all()
-    return {"preps": [_to_response(p) for p in preps], "total": len(preps)}
+    rows = result.all()
+    return {"preps": [_to_response(prep, job) for prep, job in rows], "total": len(rows)}
 
 
 @router.get("/{prep_id}", response_model=InterviewPrepResponse)
@@ -198,14 +199,17 @@ async def get_prep(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get a specific interview prep."""
+    """Get a specific interview prep with job info."""
     result = await db.execute(
-        select(InterviewPrep).where(InterviewPrep.id == prep_id, InterviewPrep.user_id == current_user.id)
+        select(InterviewPrep, Job)
+        .outerjoin(Job, InterviewPrep.job_id == Job.id)
+        .where(InterviewPrep.id == prep_id, InterviewPrep.user_id == current_user.id)
     )
-    prep = result.scalar_one_or_none()
-    if not prep:
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Interview prep not found")
-    return _to_response(prep)
+    prep, job = row
+    return _to_response(prep, job)
 
 
 @router.post("/{prep_id}/chat")
@@ -320,10 +324,12 @@ def _safe_dict(val) -> dict:
     return {}
 
 
-def _to_response(prep: InterviewPrep) -> InterviewPrepResponse:
+def _to_response(prep: InterviewPrep, job: "Job | None" = None) -> InterviewPrepResponse:
     return InterviewPrepResponse(
         id=prep.id,
         job_id=prep.job_id,
+        job_title=job.title if job else None,
+        job_company=job.company if job else None,
         company_research=_safe_dict(prep.company_research),
         technical_questions=_safe_list(prep.technical_questions),
         behavioral_questions=_safe_list(prep.behavioral_questions),

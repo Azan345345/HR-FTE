@@ -636,12 +636,18 @@ export function InterviewPrepView({ focusedJobId }: InterviewPrepViewProps) {
     };
 
     const selectedJob = jobs.find(j => j.id === selectedJobId)
-        || applications.find(a => a.job_id === selectedJobId)?.job;
+        || applications.find(a => a.job_id === selectedJobId)?.job
+        || (activePrep?.job_title ? { id: selectedJobId, title: activePrep.job_title, company: activePrep.job_company } : null);
     const appliedJobIds = new Set(applications.map((a: any) => a.job_id));
-    const displayJobs = (jobs.length > 0
+    // Build display list: start with fetched jobs (or apps), then inject any prep jobs not already listed
+    const baseJobs = jobs.length > 0
         ? jobs
-        : applications.map(a => ({ ...a.job, id: a.job_id }))
-    ).slice().sort((a: any, b: any) =>
+        : applications.map(a => ({ ...a.job, id: a.job_id }));
+    const baseJobIds = new Set(baseJobs.map((j: any) => j.id));
+    const prepJobs = preps
+        .filter(p => p.job_title && !baseJobIds.has(p.job_id))
+        .map(p => ({ id: p.job_id, title: p.job_title, company: p.job_company, created_at: p.created_at }));
+    const displayJobs = [...baseJobs, ...prepJobs].sort((a: any, b: any) =>
         new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
     );
 

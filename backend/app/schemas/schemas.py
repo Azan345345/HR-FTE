@@ -170,6 +170,8 @@ class InterviewPrepRequest(BaseModel):
 class InterviewPrepResponse(BaseModel):
     id: str
     job_id: str
+    job_title: Optional[str] = None
+    job_company: Optional[str] = None
     company_research: dict = {}
     technical_questions: list = []
     behavioral_questions: list = []
